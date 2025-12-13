@@ -71,21 +71,50 @@ export default function Employee() {
                 params: { limit: 1000 }, // grab a reasonable batch but avoid unbounded payloads
             });
 
-            if (response.data.employees) {
-                const employeesData = response.data.employees || [];
+            // Handle response - employees can be an array or empty
+            // Empty data is not an error, just means no employees exist
+            const employeesData = response.data?.employees || response.data || [];
+
+            // If it's an array, normalize it (even if empty)
+            if (Array.isArray(employeesData)) {
                 const normalizedEmployees = employeesData.map(emp => ({
                     ...emp,
                     status: normalizeStatus(emp.status)
                 }));
                 setEmployees(normalizedEmployees);
             } else {
-                setError(response.data.message || 'Failed to fetch employees');
+                // If it's not an array, set empty array (no employees)
+                setEmployees([]);
             }
         } catch (err) {
-            const errorMessage = err.message || 'Error connecting to server. Please check if the backend is running.';
-            setError(errorMessage);
-            console.error('Error fetching employees:', err);
-            setEmployees([]); // Set empty array on error
+            // Handle different error types
+            // Check if it's an authentication error (401/403) - these should redirect (handled by interceptor)
+            if (err.response?.status === 401 || err.response?.status === 403) {
+                // Authentication error - interceptor will handle redirect
+                // Just set empty array and no error message
+                setError('');
+                setEmployees([]);
+            } else if (err.response?.status === 404) {
+                // Not found - just means no employees exist (not an error)
+                setEmployees([]);
+                setError('');
+            } else if (err.response?.status >= 500) {
+                // Server errors
+                setError('Server error. Please try again later.');
+                setEmployees([]);
+                console.error('Server error fetching employees:', err);
+            } else {
+                // Network errors or other issues
+                // Only show error if it's a real connection problem
+                if (err.message?.includes('Network') || err.message?.includes('timeout')) {
+                    setError('Error connecting to server. Please check if the backend is running.');
+                } else {
+                    // Other errors - just show empty state (no employees)
+                    setError('');
+                }
+                setEmployees([]);
+                console.error('Error fetching employees:', err);
+            }
         } finally {
             setLoading(false);
         }
