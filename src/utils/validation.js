@@ -3,85 +3,67 @@
  * Provides validation functions for all common field types
  */
 
-import { parsePhoneNumber, isValidPhoneNumber, isPossiblePhoneNumber } from 'libphonenumber-js';
+import { getCountries, getCountryCallingCode } from 'libphonenumber-js';
 
 // Regex patterns
 export const VALIDATION_PATTERNS = {
     // Name: letters and spaces only, 2-50 characters
     NAME: /^[A-Za-z\s]{2,50}$/,
-    
+
     // Email: standard email format
     EMAIL: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-    
+
     // Number: positive numbers only (integers and decimals)
     NUMBER: /^[0-9]+(\.[0-9]+)?$/,
-    
+
     // Integer: whole numbers only
     INTEGER: /^[0-9]+$/,
-    
+
     // Phone: basic phone format (will be validated with country codes separately)
     PHONE_BASIC: /^\+?[1-9]\d{1,14}$/,
-    
+
     // Alphanumeric: letters and numbers
     ALPHANUMERIC: /^[A-Za-z0-9]+$/,
-    
+
     // Text with spaces: letters, numbers, spaces, and common punctuation
     TEXT: /^[A-Za-z0-9\s.,!?;:'"()-]+$/,
-    
+
     // Password: at least 8 characters, 1 uppercase, 1 lowercase, 1 number
     PASSWORD: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/,
-    
+
     // Date: YYYY-MM-DD format
     DATE: /^\d{4}-\d{2}-\d{2}$/,
-    
+
     // Postal code: alphanumeric, 4-10 characters
     POSTAL_CODE: /^[A-Za-z0-9]{4,10}$/,
-    
+
     // Employee ID: alphanumeric with optional hyphens
     EMPLOYEE_ID: /^[A-Za-z0-9-]+$/,
-    
+
     // IBAN: 2 letters (country code) + 2 digits (check digits) + 4-30 alphanumeric characters
     // Note: Spaces are allowed and will be removed before validation
     IBAN: /^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$/i,
-    
+
     // SWIFT Code: 8 or 11 characters (4 letters + 2 letters + 2 alphanumeric + optional 3 characters)
     SWIFT: /^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/,
 };
 
-// Phone number validation by country code
-// Format: { countryCode: { minLength: number, maxLength: number, pattern: RegExp } }
-export const PHONE_VALIDATION_BY_COUNTRY = {
-    // United Arab Emirates
-    '971': { minLength: 9, maxLength: 9, name: 'UAE' }, // UAE numbers: 9 digits after country code
-    // India
-    '91': { minLength: 10, maxLength: 10, name: 'India' },
-    // United States
-    '1': { minLength: 10, maxLength: 10, name: 'USA/Canada' },
-    // United Kingdom
-    '44': { minLength: 10, maxLength: 10, name: 'UK' },
-    // Australia
-    '61': { minLength: 9, maxLength: 9, name: 'Australia' },
-    // Philippines
-    '63': { minLength: 10, maxLength: 10, name: 'Philippines' },
-    // Pakistan
-    '92': { minLength: 10, maxLength: 10, name: 'Pakistan' },
-    // Bangladesh
-    '880': { minLength: 10, maxLength: 10, name: 'Bangladesh' },
-    // Sri Lanka
-    '94': { minLength: 9, maxLength: 9, name: 'Sri Lanka' },
-    // Nepal
-    '977': { minLength: 10, maxLength: 10, name: 'Nepal' },
-    // Saudi Arabia
-    '966': { minLength: 9, maxLength: 9, name: 'Saudi Arabia' },
-    // Qatar
-    '974': { minLength: 8, maxLength: 8, name: 'Qatar' },
-    // Kuwait
-    '965': { minLength: 8, maxLength: 8, name: 'Kuwait' },
-    // Bahrain
-    '973': { minLength: 8, maxLength: 8, name: 'Bahrain' },
-    // Oman
-    '968': { minLength: 8, maxLength: 8, name: 'Oman' },
+// Phone number validation by country code (built from all international calling codes)
+// Format: { [callingCode]: { countries: string[] } }
+const buildCountryCallingCodeMap = () => {
+    const map = {};
+    getCountries().forEach((iso) => {
+        const callingCode = getCountryCallingCode(iso); // numeric string like "971"
+        if (!map[callingCode]) {
+            map[callingCode] = { countries: [] };
+        }
+        map[callingCode].countries.push(iso);
+    });
+    return map;
 };
+
+export const PHONE_VALIDATION_BY_COUNTRY = buildCountryCallingCodeMap();
+export const PHONE_CALLING_CODES = Object.keys(PHONE_VALIDATION_BY_COUNTRY);
 
 /**
  * Validates if a value is not empty
@@ -112,130 +94,62 @@ export const validateEmail = (email, required = true) => {
     } else if (!email || email.trim() === '') {
         return { isValid: true, error: '' }; // Optional field, empty is valid
     }
-    
+
     if (!VALIDATION_PATTERNS.EMAIL.test(email.trim())) {
         return { isValid: false, error: 'Please enter a valid email address' };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
 /**
- * Validates phone number with country code using libphonenumber-js
- * @param {string} phoneNumber - Phone number (can include country code with +)
- * @param {string} countryCode - Country code (e.g., '971' for UAE, '91' for India) or country ISO code (e.g., 'AE', 'IN')
+ * Validates email or username format
+ * @param {string} emailOrUsername - Email or username to validate
  * @param {boolean} required - Whether field is required
  * @returns {object} { isValid: boolean, error: string }
  */
-export const validatePhoneNumber = (phoneNumber, countryCode = null, required = true) => {
+export const validateEmailOrUsername = (emailOrUsername, required = true) => {
+    if (required) {
+        const requiredCheck = validateRequired(emailOrUsername, 'Email/Username');
+        if (!requiredCheck.isValid) return requiredCheck;
+    } else if (!emailOrUsername || emailOrUsername.trim() === '') {
+        return { isValid: true, error: '' }; // Optional field, empty is valid
+    }
+
+    const trimmed = emailOrUsername.trim();
+    
+    // Check if it's a valid email format
+    const isEmail = VALIDATION_PATTERNS.EMAIL.test(trimmed);
+    
+    // Check if it's a valid username (alphanumeric, 3-30 characters)
+    const isUsername = /^[A-Za-z0-9_]{3,30}$/.test(trimmed);
+    
+    if (!isEmail && !isUsername) {
+        return { isValid: false, error: 'Please enter a valid email or username' };
+    }
+
+    return { isValid: true, error: '' };
+};
+
+/**
+ * Validates phone number with a simple numeric check.
+ * Rules: required (unless optional), digits only with optional leading +.
+ */
+export const validatePhoneNumber = (phoneNumber, _countryCode = null, required = true) => {
     if (required) {
         const requiredCheck = validateRequired(phoneNumber, 'Phone number');
         if (!requiredCheck.isValid) return requiredCheck;
     } else if (!phoneNumber || phoneNumber.trim() === '') {
         return { isValid: true, error: '' }; // Optional field
     }
-    
-    try {
-        // Remove spaces for processing
-        let cleaned = phoneNumber.replace(/\s/g, '').trim();
-        
-        if (!cleaned) {
-            return required 
-                ? { isValid: false, error: 'Phone number is required' }
-                : { isValid: true, error: '' };
-        }
-        
-        // Ensure the number starts with + for E.164 format (required by libphonenumber-js)
-        // react-phone-input-2 might return value without + prefix
-        if (!cleaned.startsWith('+')) {
-            cleaned = '+' + cleaned;
-        }
-        
-        // Convert numeric country code to ISO country code if needed
-        // react-phone-input-2 uses ISO country codes (e.g., 'ae', 'in')
-        // libphonenumber-js also uses ISO country codes (e.g., 'AE', 'IN')
-        let countryISO = null;
-        if (countryCode) {
-            // Map numeric codes to ISO codes
-            const countryCodeMap = {
-                '971': 'AE', // UAE
-                '91': 'IN',  // India
-                '1': 'US',   // USA/Canada
-                '44': 'GB',  // UK
-                '61': 'AU',  // Australia
-                '63': 'PH',  // Philippines
-                '92': 'PK',  // Pakistan
-                '880': 'BD', // Bangladesh
-                '94': 'LK',  // Sri Lanka
-                '977': 'NP', // Nepal
-                '966': 'SA', // Saudi Arabia
-                '974': 'QA', // Qatar
-                '965': 'KW', // Kuwait
-                '973': 'BH', // Bahrain
-                '968': 'OM', // Oman
-            };
-            
-            // If it's a numeric code, convert to ISO
-            if (countryCodeMap[countryCode]) {
-                countryISO = countryCodeMap[countryCode];
-            } else if (countryCode && countryCode.length === 2) {
-                // Already an ISO code, just uppercase it
-                countryISO = countryCode.toUpperCase();
-            }
-        }
-        
-        // Try to parse the phone number
-        let parsedNumber;
-        try {
-            // If we have a country code, use it for parsing
-            if (countryISO) {
-                parsedNumber = parsePhoneNumber(cleaned, countryISO);
-            } else {
-                // Try to parse without country (will auto-detect from + prefix)
-                parsedNumber = parsePhoneNumber(cleaned);
-            }
-        } catch (error) {
-            // If parsing fails, try parsing as-is (libphonenumber-js will try to detect country)
-            try {
-                parsedNumber = parsePhoneNumber(cleaned);
-            } catch (e) {
-                return { 
-                    isValid: false, 
-                    error: 'Please enter a valid phone number' 
-                };
-            }
-        }
-        
-        // Check if the number is possible (correct format)
-        if (!isPossiblePhoneNumber(parsedNumber.number)) {
-            const countryName = parsedNumber.country 
-                ? getCountryName(parsedNumber.country) 
-                : 'phone';
-            return { 
-                isValid: false, 
-                error: `Please enter a valid ${countryName} phone number` 
-            };
-        }
-        
-        // Check if the number is valid (actually exists)
-        if (!isValidPhoneNumber(parsedNumber.number)) {
-            const countryName = parsedNumber.country 
-                ? getCountryName(parsedNumber.country) 
-                : 'phone';
-            return { 
-                isValid: false, 
-                error: `Please enter a valid ${countryName} phone number` 
-            };
-        }
-        
-        return { isValid: true, error: '' };
-        
-    } catch (error) {
-        return { 
-            isValid: false, 
-            error: 'Please enter a valid phone number' 
-        };
+
+    const cleaned = phoneNumber.trim();
+
+    if (!/^\+?\d+$/.test(cleaned)) {
+        return { isValid: false, error: 'Phone number must contain digits only' };
     }
+
+    return { isValid: true, error: '' };
 };
 
 /**
@@ -279,21 +193,21 @@ export const validateNumber = (value, required = true, min = null, max = null) =
     } else if (value === null || value === undefined || value === '') {
         return { isValid: true, error: '' }; // Optional field
     }
-    
+
     const numValue = typeof value === 'string' ? parseFloat(value) : value;
-    
+
     if (isNaN(numValue)) {
         return { isValid: false, error: 'Please enter a valid number' };
     }
-    
+
     if (min !== null && numValue < min) {
         return { isValid: false, error: `Number must be at least ${min}` };
     }
-    
+
     if (max !== null && numValue > max) {
         return { isValid: false, error: `Number must be no more than ${max}` };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -312,21 +226,21 @@ export const validateInteger = (value, required = true, min = null, max = null) 
     } else if (value === null || value === undefined || value === '') {
         return { isValid: true, error: '' };
     }
-    
+
     const intValue = typeof value === 'string' ? parseInt(value, 10) : value;
-    
+
     if (isNaN(intValue) || !Number.isInteger(intValue)) {
         return { isValid: false, error: 'Please enter a valid whole number' };
     }
-    
+
     if (min !== null && intValue < min) {
         return { isValid: false, error: `Number must be at least ${min}` };
     }
-    
+
     if (max !== null && intValue > max) {
         return { isValid: false, error: `Number must be no more than ${max}` };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -343,11 +257,11 @@ export const validateName = (name, required = true) => {
     } else if (!name || name.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     if (!VALIDATION_PATTERNS.NAME.test(name.trim())) {
         return { isValid: false, error: 'Name must contain only letters and spaces, 2-50 characters' };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -366,24 +280,24 @@ export const validateDate = (date, required = true, minDate = null, maxDate = nu
     } else if (!date || date.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     if (!VALIDATION_PATTERNS.DATE.test(date)) {
         return { isValid: false, error: 'Please enter a valid date (YYYY-MM-DD)' };
     }
-    
+
     const dateObj = new Date(date);
     if (isNaN(dateObj.getTime())) {
         return { isValid: false, error: 'Please enter a valid date' };
     }
-    
+
     if (minDate && dateObj < minDate) {
         return { isValid: false, error: `Date must be on or after ${minDate.toLocaleDateString()}` };
     }
-    
+
     if (maxDate && dateObj > maxDate) {
         return { isValid: false, error: `Date must be on or before ${maxDate.toLocaleDateString()}` };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -400,18 +314,18 @@ export const validatePassword = (password, required = true) => {
     } else if (!password || password.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     if (password.length < 8) {
         return { isValid: false, error: 'Password must be at least 8 characters long' };
     }
-    
+
     if (!VALIDATION_PATTERNS.PASSWORD.test(password)) {
         return {
             isValid: false,
             error: 'Password must contain at least one uppercase letter, one lowercase letter, and one number'
         };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -430,17 +344,17 @@ export const validateTextLength = (text, minLength = null, maxLength = null, req
     } else if (!text || text.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     const trimmed = text.trim();
-    
+
     if (minLength !== null && trimmed.length < minLength) {
         return { isValid: false, error: `Text must be at least ${minLength} characters` };
     }
-    
+
     if (maxLength !== null && trimmed.length > maxLength) {
         return { isValid: false, error: `Text must be no more than ${maxLength} characters` };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -458,17 +372,17 @@ export const validateTextLength = (text, minLength = null, maxLength = null, req
 export const validateFields = (fields) => {
     const errors = {};
     let isValid = true;
-    
+
     for (const [fieldName, config] of Object.entries(fields)) {
         const { value, validator, ...validatorArgs } = config;
         const result = validator(value, ...Object.values(validatorArgs));
-        
+
         if (!result.isValid) {
             errors[fieldName] = result.error;
             isValid = false;
         }
     }
-    
+
     return { isValid, errors };
 };
 
@@ -479,20 +393,20 @@ export const validateFields = (fields) => {
  */
 export const extractCountryCode = (phoneNumber) => {
     if (!phoneNumber) return null;
-    
+
     const cleaned = phoneNumber.replace(/[^\d+]/g, '');
-    
+
     if (cleaned.startsWith('+')) {
         // Try to match known country codes (longest first to avoid partial matches)
-        const sortedCodes = Object.keys(PHONE_VALIDATION_BY_COUNTRY).sort((a, b) => b.length - a.length);
-        
+        const sortedCodes = [...PHONE_CALLING_CODES].sort((a, b) => b.length - a.length);
+
         for (const code of sortedCodes) {
             if (cleaned.startsWith(`+${code}`)) {
                 return code;
             }
         }
     }
-    
+
     return null;
 };
 
@@ -503,10 +417,10 @@ export const extractCountryCode = (phoneNumber) => {
  */
 export const formatPhoneNumber = (phoneNumber) => {
     if (!phoneNumber) return '';
-    
+
     // Remove all non-digit characters
     const digits = phoneNumber.replace(/\D/g, '');
-    
+
     // If it starts with country code, format it
     if (digits.length > 10) {
         const countryCode = extractCountryCode(phoneNumber);
@@ -515,7 +429,7 @@ export const formatPhoneNumber = (phoneNumber) => {
             return `+${countryCode} ${numberPart}`;
         }
     }
-    
+
     return phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
 };
 
@@ -533,19 +447,19 @@ export const validateIBAN = (iban, required = true) => {
     } else if (!iban || iban.trim() === '') {
         return { isValid: true, error: '' }; // Optional field
     }
-    
+
     // Remove spaces and convert to uppercase
     const cleaned = iban.replace(/\s/g, '').toUpperCase();
-    
+
     // Basic format check: 2 letters + 2 digits + 4-30 alphanumeric
     if (cleaned.length < 15 || cleaned.length > 34) {
         return { isValid: false, error: 'IBAN must be between 15 and 34 characters' };
     }
-    
+
     if (!VALIDATION_PATTERNS.IBAN.test(cleaned)) {
         return { isValid: false, error: 'Please enter a valid IBAN format (e.g., AE123456789012345678901)' };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -563,19 +477,19 @@ export const validateSWIFT = (swiftCode, required = false) => {
     } else if (!swiftCode || swiftCode.trim() === '') {
         return { isValid: true, error: '' }; // Optional field
     }
-    
+
     // Convert to uppercase and remove spaces
     const cleaned = swiftCode.replace(/\s/g, '').toUpperCase();
-    
+
     // SWIFT code must be 8 or 11 characters
     if (cleaned.length !== 8 && cleaned.length !== 11) {
         return { isValid: false, error: 'SWIFT code must be 8 or 11 characters' };
     }
-    
+
     if (!VALIDATION_PATTERNS.SWIFT.test(cleaned)) {
         return { isValid: false, error: 'Please enter a valid SWIFT code format (e.g., ABCDUS33 or ABCDUS33XXX)' };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -592,23 +506,22 @@ export const validateAccountNumber = (accountNumber, required = true) => {
     } else if (!accountNumber || accountNumber.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     const cleaned = accountNumber.trim();
-    
-    // Account numbers are typically alphanumeric, 6-20 characters
-    if (cleaned.length < 6) {
-        return { isValid: false, error: 'Account number must be at least 6 characters' };
+
+    // Account number must be numeric only
+    if (!/^\d+$/.test(cleaned)) {
+        return { isValid: false, error: 'Account number must contain only numbers' };
     }
-    
-    if (cleaned.length > 20) {
-        return { isValid: false, error: 'Account number must be no more than 20 characters' };
+
+    if (cleaned.length < 1) {
+        return { isValid: false, error: 'Account number is required' };
     }
-    
-    // Allow alphanumeric characters only
-    if (!/^[A-Za-z0-9]+$/.test(cleaned)) {
-        return { isValid: false, error: 'Account number must contain only letters and numbers' };
+
+    if (cleaned.length > 30) {
+        return { isValid: false, error: 'Account number must be no more than 30 digits' };
     }
-    
+
     return { isValid: true, error: '' };
 };
 
@@ -625,17 +538,22 @@ export const validateBankName = (bankName, required = true) => {
     } else if (!bankName || bankName.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     const cleaned = bankName.trim();
-    
+
     if (cleaned.length < 2) {
         return { isValid: false, error: 'Bank name must be at least 2 characters' };
     }
-    
+
     if (cleaned.length > 100) {
         return { isValid: false, error: 'Bank name must be no more than 100 characters' };
     }
-    
+
+    // Only letters and spaces allowed, no numbers or special characters
+    if (!/^[A-Za-z\s]+$/.test(cleaned)) {
+        return { isValid: false, error: 'Bank name must contain only letters and spaces' };
+    }
+
     return { isValid: true, error: '' };
 };
 
@@ -652,17 +570,22 @@ export const validateAccountName = (accountName, required = true) => {
     } else if (!accountName || accountName.trim() === '') {
         return { isValid: true, error: '' };
     }
-    
+
     const cleaned = accountName.trim();
-    
+
     if (cleaned.length < 2) {
         return { isValid: false, error: 'Account name must be at least 2 characters' };
     }
-    
+
     if (cleaned.length > 100) {
         return { isValid: false, error: 'Account name must be no more than 100 characters' };
     }
-    
+
+    // Only letters and spaces allowed, no numbers or special characters
+    if (!/^[A-Za-z\s]+$/.test(cleaned)) {
+        return { isValid: false, error: 'Account name must contain only letters and spaces' };
+    }
+
     return { isValid: true, error: '' };
 };
 

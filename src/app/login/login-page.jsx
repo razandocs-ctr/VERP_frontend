@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import axiosInstance from '@/utils/axios';
+import { validateEmailOrUsername, validatePassword } from '@/utils/validation';
 
 export default function LoginPage() {
     const router = useRouter();
@@ -18,16 +19,20 @@ export default function LoginPage() {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        let formErrors = {};
+        const formErrors = {};
 
-        if (!email.trim()) {
-            formErrors.email = "Email is required";
+        const emailResult = validateEmailOrUsername(email);
+        if (!emailResult.isValid) {
+            formErrors.email = "Email/Username required & valid format";
         }
-        if (!password.trim()) {
+
+        // For login, only check if password is not empty (don't validate format)
+        if (!password || password.trim() === '') {
             formErrors.password = "Password is required";
         }
+
         if (!agree) {
-            formErrors.agree = "You must agree to Terms & Conditions";
+            formErrors.agree = "It must be checked to proceed with login.";
         }
 
         setErrors(formErrors);
@@ -39,6 +44,7 @@ export default function LoginPage() {
 
         try {
             setLoading(true);
+            setServerError('');
 
             const { data } = await axiosInstance.post('/Login', {
                 email: email.trim(),
@@ -46,13 +52,38 @@ export default function LoginPage() {
             });
 
             if (typeof window !== 'undefined') {
+                // Store token and user data
+                const userData = {
+                    ...data?.user,
+                    isAdmin: data?.isAdmin || false,
+                    isAdministrator: data?.isAdministrator || false
+                };
                 localStorage.setItem('token', data?.token || '');
-                localStorage.setItem('employeeUser', JSON.stringify(data?.user || {}));
+                localStorage.setItem('user', JSON.stringify(userData));
+                // Also store for backward compatibility
+                localStorage.setItem('employeeUser', JSON.stringify(userData));
+
+                // Store permissions if available
+                if (data?.permissions) {
+                    localStorage.setItem('userPermissions', JSON.stringify(data.permissions));
+                }
+
+                // Store admin status
+                if (data?.isAdmin !== undefined) {
+                    localStorage.setItem('isAdmin', data.isAdmin.toString());
+                }
+
+                // Store token expiry info
+                if (data?.expiresIn) {
+                    localStorage.setItem('tokenExpiresIn', data.expiresIn);
+                }
             }
 
+            // Show success and redirect
             router.push('/dashboard');
         } catch (err) {
-            setServerError(err.message || 'Login failed. Please try again.');
+            const errorMessage = err.response?.data?.message || err.message || 'Login failed. Please try again.';
+            setServerError(errorMessage);
         } finally {
             setLoading(false);
         }
@@ -129,7 +160,7 @@ export default function LoginPage() {
                         <div className="mb-2">
                             <input
                                 type="text"
-                                placeholder="Username or Email"
+                                placeholder="Email or Username"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 className={`w-full px-5 py-3.5 rounded-lg text-sm transition focus:outline-none focus:ring-2 ${errors.email

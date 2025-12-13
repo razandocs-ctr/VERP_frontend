@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import PhoneInput from 'react-phone-input-2';
 import DatePicker from 'react-datepicker';
+import { Country, State, City } from 'country-state-city';
 import Select from 'react-select';
 import 'react-datepicker/dist/react-datepicker.css';
 
@@ -22,15 +23,13 @@ const calculateAgeFromDate = (value) => {
     }
     return age >= 0 ? age.toString() : '';
 };
-const countryOptions = [
-    { value: 'uae', label: 'UAE' },
-    { value: 'india', label: 'India' },
-    { value: 'usa', label: 'USA' }
-];
-const stateOptions = [
-    { value: 'state1', label: 'State 1' },
-    { value: 'state2', label: 'State 2' }
-];
+
+// Transform countries for react-select
+const countryOptions = Country.getAllCountries().map(country => ({
+    label: country.name,
+    value: country.isoCode
+}));
+
 const selectStyles = {
     control: (provided, state) => ({
         ...provided,
@@ -50,6 +49,16 @@ import Sidebar from '@/components/Sidebar';
 import Navbar from '@/components/Navbar';
 import axios from '@/utils/axios';
 import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
     validateRequired,
     validateEmail,
     validatePhoneNumber,
@@ -57,7 +66,6 @@ import {
     validateNumber,
     validateInteger,
     validateDate,
-    validatePassword,
     validateTextLength,
     extractCountryCode
 } from '@/utils/validation';
@@ -65,8 +73,16 @@ import {
 export default function AddEmployee() {
     const router = useRouter();
     const [currentStep, setCurrentStep] = useState(1);
-    const [showAddMoreDropdown, setShowAddMoreDropdown] = useState(false);
+    const [showAddMoreModal, setShowAddMoreModal] = useState(false);
     const [loading, setLoading] = useState(false);
+
+    // Track visibility of salary components
+    const [visibleAllowances, setVisibleAllowances] = useState({
+        houseRent: false,
+        vehicle: false,
+        fuel: false, // Added fuel allowance visibility
+        other: false
+    });
     const [error, setError] = useState('');
     const [fieldErrors, setFieldErrors] = useState({
         basic: {},
@@ -84,7 +100,6 @@ export default function AddEmployee() {
         email: '',
         contactNumber: '',
         enablePortalAccess: false,
-        password: ''
     });
 
     useEffect(() => {
@@ -94,20 +109,30 @@ export default function AddEmployee() {
 
     // Step 2: Salary Details
     const [salaryDetails, setSalaryDetails] = useState({
-        monthlySalary: 1000,
-        basic: 600,
-        basicPercentage: 60,
-        houseRentAllowance: 200,
-        houseRentPercentage: 20,
-        otherAllowance: 200,
-        otherAllowancePercentage: 20,
-        additionalAllowances: []
+        monthlySalary: '', // This equals total salary
+        basic: '',
+        basicPercentage: 50, // Default 50%
+        houseRentAllowance: '',
+        houseRentPercentage: '',
+        vehicleAllowance: '',
+        vehiclePercentage: '',
+        fuelAllowance: '',
+        fuelPercentage: '',
+        otherAllowance: '',
+        otherPercentage: '',
+        additionalAllowances: [] // Array of { type, amount, percentage }
     });
+
+    // Dynamic State Options
+    const [stateOptions, setStateOptions] = useState([]);
 
     // Step 3: Personal Details
     const [personalDetails, setPersonalDetails] = useState({
         dateOfBirth: '',
         age: '', // For display only, not sent to backend
+        nationality: '', // Added nationality
+        gender: '',
+        fathersName: '',
         gender: '',
         fathersName: '',
         addressLine1: '',
@@ -147,6 +172,11 @@ export default function AddEmployee() {
             case 'lastName':
                 validation = validateName(value, true);
                 break;
+            case 'contactNumber': {
+                const countryCode = extractCountryCode(value) || selectedCountryCode;
+                validation = validatePhoneNumber(value, countryCode, true);
+                break;
+            }
             case 'email':
                 validation = validateEmail(value, true);
                 break;
@@ -155,11 +185,6 @@ export default function AddEmployee() {
                 break;
             case 'employeeId':
                 validation = validateRequired(value, 'Employee ID');
-                break;
-            case 'password':
-                validation = basicDetails.enablePortalAccess
-                    ? validatePassword(value, true)
-                    : { isValid: true, error: '' };
                 break;
             default:
                 validation = { isValid: true, error: '' };
@@ -196,7 +221,7 @@ export default function AddEmployee() {
     const handlePhoneChange = (value, country) => {
         // Remove all spaces from phone number
         const cleanedValue = value.replace(/\s/g, '');
-        
+
         handleBasicDetailsChange('contactNumber', cleanedValue);
 
         // Extract country code - use ISO country code for libphonenumber-js
@@ -242,8 +267,18 @@ export default function AddEmployee() {
     };
 
     const handleSalaryChange = (field, value) => {
+        // Allow empty string to clear the field
+        if (value === '') {
+            setSalaryDetails(prev => ({ ...prev, [field]: '' }));
+            setFieldErrors(prev => ({
+                ...prev,
+                salary: { ...prev.salary, [field]: '' }
+            }));
+            return;
+        }
+
         // Validate number input
-        if (value !== '' && value !== null && value !== undefined) {
+        if (value !== null && value !== undefined) {
             const numValue = typeof value === 'string' ? parseFloat(value) : value;
 
             if (isNaN(numValue)) {
@@ -257,34 +292,17 @@ export default function AddEmployee() {
                 return;
             }
 
-            // Validate percentage fields (0-100)
-            if (field.includes('Percentage')) {
-                const percentageValidation = validateNumber(numValue, true, 0, 100);
-                if (!percentageValidation.isValid) {
-                    setFieldErrors(prev => ({
-                        ...prev,
-                        salary: {
-                            ...prev.salary,
-                            [field]: percentageValidation.error
-                        }
-                    }));
-                    return;
-                }
-            }
-
             // Validate positive numbers for amounts
-            if (!field.includes('Percentage')) {
-                const amountValidation = validateNumber(numValue, true, 0);
-                if (!amountValidation.isValid) {
-                    setFieldErrors(prev => ({
-                        ...prev,
-                        salary: {
-                            ...prev.salary,
-                            [field]: amountValidation.error
-                        }
-                    }));
-                    return;
-                }
+            const amountValidation = validateNumber(numValue, true, 0);
+            if (!amountValidation.isValid) {
+                setFieldErrors(prev => ({
+                    ...prev,
+                    salary: {
+                        ...prev.salary,
+                        [field]: amountValidation.error
+                    }
+                }));
+                return;
             }
         }
 
@@ -300,17 +318,52 @@ export default function AddEmployee() {
         setSalaryDetails(prev => {
             const updated = { ...prev, [field]: value };
 
-            // Auto-calculate percentages and amounts
-            if (field === 'monthlySalary') {
-                updated.basic = Math.round((updated.monthlySalary * updated.basicPercentage) / 100);
-                updated.houseRentAllowance = Math.round((updated.monthlySalary * updated.houseRentPercentage) / 100);
-                updated.otherAllowance = Math.round((updated.monthlySalary * updated.otherAllowancePercentage) / 100);
-            } else if (field === 'basicPercentage') {
-                updated.basic = Math.round((updated.monthlySalary * value) / 100);
-            } else if (field === 'houseRentPercentage') {
-                updated.houseRentAllowance = Math.round((updated.monthlySalary * value) / 100);
-            } else if (field === 'otherAllowancePercentage') {
-                updated.otherAllowance = Math.round((updated.monthlySalary * value) / 100);
+            // If monthly salary changes, recalculate basic (50% default)
+            // Note: When allowances are added, monthly salary will be updated by useEffect to match total
+            if (field === 'monthlySalary' && value) {
+                const monthly = parseFloat(value) || 0;
+                const basicPercent = updated.basicPercentage || 50;
+                updated.basic = (monthly * basicPercent / 100).toFixed(2);
+            }
+
+            // If basic percentage changes, recalculate basic amount
+            if (field === 'basicPercentage' && updated.monthlySalary) {
+                const monthly = parseFloat(updated.monthlySalary) || 0;
+                updated.basic = (monthly * parseFloat(value) / 100).toFixed(2);
+            }
+
+            // If basic amount changes manually, recalculate percentage
+            if (field === 'basic' && updated.monthlySalary) {
+                const monthly = parseFloat(updated.monthlySalary) || 0;
+                const basic = parseFloat(value) || 0;
+                if (monthly > 0) {
+                    updated.basicPercentage = ((basic / monthly) * 100).toFixed(2);
+                }
+            }
+
+            // If allowance percentage changes, recalculate amount based on monthly salary (same logic as basic)
+            if ((field === 'houseRentPercentage' || field === 'vehiclePercentage' || field === 'fuelPercentage' || field === 'otherPercentage') && updated.monthlySalary) {
+                const monthly = parseFloat(updated.monthlySalary) || 0;
+                const percentage = parseFloat(value) || 0;
+                const allowanceField = field.replace('Percentage', '');
+                if (monthly > 0) {
+                    updated[allowanceField] = (monthly * percentage / 100).toFixed(2);
+                } else {
+                    updated[allowanceField] = '0.00';
+                }
+            }
+
+            // If allowance amount changes manually, recalculate percentage based on monthly salary (same logic as basic)
+            if ((field === 'houseRentAllowance' || field === 'vehicleAllowance' || field === 'fuelAllowance' || field === 'otherAllowance') && updated.monthlySalary) {
+                const monthly = parseFloat(updated.monthlySalary) || 0;
+                const amount = parseFloat(value) || 0;
+                if (monthly > 0) {
+                    const percentageField = field + 'Percentage';
+                    updated[percentageField] = ((amount / monthly) * 100).toFixed(2);
+                } else {
+                    const percentageField = field + 'Percentage';
+                    updated[percentageField] = '0';
+                }
             }
 
             return updated;
@@ -318,6 +371,38 @@ export default function AddEmployee() {
     };
 
     const handlePersonalDetailsChange = (field, value) => {
+        if (field === 'country') {
+            // Reset state and city when country changes
+            setPersonalDetails(prev => ({
+                ...prev,
+                country: value,
+                state: '',
+                city: ''
+            }));
+
+            // Load states for selected country
+            if (value) {
+                const states = State.getStatesOfCountry(value).map(state => ({
+                    label: state.name,
+                    value: state.isoCode
+                }));
+                setStateOptions(states);
+            } else {
+                setStateOptions([]);
+            }
+            return;
+        }
+
+        if (fieldErrors.personal[field]) {
+            setFieldErrors(prev => ({
+                ...prev,
+                personal: {
+                    ...prev.personal,
+                    [field]: ''
+                }
+            }));
+        }
+
         setPersonalDetails(prev => {
             const updated = { ...prev, [field]: value };
 
@@ -330,14 +415,119 @@ export default function AddEmployee() {
         });
     };
 
+    // Fathers name: letters and spaces only
+    const handleFatherNameChange = (value) => {
+        const sanitized = value.replace(/[^A-Za-z\s]/g, '');
+        handlePersonalDetailsChange('fathersName', sanitized);
+
+        const validation = validateName(sanitized, false);
+        setFieldErrors(prev => ({
+            ...prev,
+            personal: {
+                ...prev.personal,
+                fathersName: validation.isValid ? '' : validation.error
+            }
+        }));
+    };
+
 
     const calculateTotal = () => {
-        const additionalTotal = salaryDetails.additionalAllowances.reduce((sum, item) => sum + item.amount, 0);
-        return salaryDetails.basic + salaryDetails.houseRentAllowance + salaryDetails.otherAllowance + additionalTotal;
+        // Total = Basic + All Allowances
+        let total = parseFloat(salaryDetails.basic) || 0;
+
+        // Add visible allowances
+        if (visibleAllowances.houseRent) {
+            total += (parseFloat(salaryDetails.houseRentAllowance) || 0);
+        }
+        if (visibleAllowances.vehicle) {
+            total += (parseFloat(salaryDetails.vehicleAllowance) || 0);
+        }
+        if (visibleAllowances.fuel) {
+            total += (parseFloat(salaryDetails.fuelAllowance) || 0);
+        }
+        if (visibleAllowances.other) {
+            total += (parseFloat(salaryDetails.otherAllowance) || 0);
+        }
+
+        // Add additional allowances from "Add More"
+        const additionalTotal = salaryDetails.additionalAllowances.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+        total += additionalTotal;
+
+        return total;
+    };
+
+    // Monthly salary is manually editable only - no auto-updates
+    // Total will be calculated and validated on "Save and Continue"
+
+    // Helper function to calculate balance amount and percentage for new allowances
+    const calculateBalanceForAllowance = (allowanceType) => {
+        const monthly = parseFloat(salaryDetails.monthlySalary) || 0;
+        if (monthly <= 0) {
+            return { amount: '0.00', percentage: '0' };
+        }
+
+        // Calculate used amount (basic + other visible allowances)
+        let usedAmount = parseFloat(salaryDetails.basic) || 0;
+        if (visibleAllowances.houseRent && allowanceType !== 'houseRent') {
+            usedAmount += parseFloat(salaryDetails.houseRentAllowance) || 0;
+        }
+        if (visibleAllowances.vehicle && allowanceType !== 'vehicle') {
+            usedAmount += parseFloat(salaryDetails.vehicleAllowance) || 0;
+        }
+        if (visibleAllowances.fuel && allowanceType !== 'fuel') {
+            usedAmount += parseFloat(salaryDetails.fuelAllowance) || 0;
+        }
+        if (visibleAllowances.other && allowanceType !== 'other') {
+            usedAmount += parseFloat(salaryDetails.otherAllowance) || 0;
+        }
+
+        const balance = Math.max(0, monthly - usedAmount);
+        const percentage = balance > 0 ? ((balance / monthly) * 100).toFixed(2) : '0';
+
+        return { amount: balance.toFixed(2), percentage };
     };
 
     const handleNext = () => {
         if (currentStep < 3) {
+            // If moving from step 2 (Salary Details), validate that total == monthly salary
+            if (currentStep === 2) {
+                const total = calculateTotal();
+                const monthly = parseFloat(salaryDetails.monthlySalary) || 0;
+
+                // Validate monthly salary is entered
+                if (!salaryDetails.monthlySalary || monthly <= 0) {
+                    setFieldErrors(prev => ({
+                        ...prev,
+                        salary: {
+                            ...prev.salary,
+                            monthlySalary: 'Monthly salary is required'
+                        }
+                    }));
+                    return;
+                }
+
+                // Validate that total equals monthly salary
+                if (Math.abs(total - monthly) > 0.01) {
+                    setFieldErrors(prev => ({
+                        ...prev,
+                        salary: {
+                            ...prev.salary,
+                            monthlySalary: `Monthly salary (AED ${monthly.toFixed(2)}) must equal total (AED ${total.toFixed(2)})`
+                        }
+                    }));
+                    return;
+                }
+
+                // Clear any previous errors
+                setFieldErrors(prev => ({
+                    ...prev,
+                    salary: {
+                        ...prev.salary,
+                        monthlySalary: ''
+                    }
+                }));
+            }
+
             setCurrentStep(currentStep + 1);
         }
     };
@@ -391,26 +581,82 @@ export default function AddEmployee() {
             hasErrors = true;
         }
 
-        if (basicDetails.enablePortalAccess) {
-            const passwordValidation = validatePassword(basicDetails.password, true);
-            if (!passwordValidation.isValid) {
-                errors.basic.password = passwordValidation.error;
-                hasErrors = true;
-            }
+        // Validate Salary Details
+        const basicValidation = validateNumber(salaryDetails.basic, true, 1);
+        if (!basicValidation.isValid) {
+            errors.salary.basic = basicValidation.error;
+            hasErrors = true;
+            if (firstErrorStep > 2) firstErrorStep = 2;
         }
 
-        // Validate Salary Details
-        const salaryValidation = validateNumber(salaryDetails.monthlySalary, true, 1);
-        if (!salaryValidation.isValid) {
-            errors.salary.monthlySalary = salaryValidation.error;
+        // Validate monthly salary
+        const monthlySalaryValidation = validateNumber(salaryDetails.monthlySalary, true, 1);
+        if (!monthlySalaryValidation.isValid) {
+            errors.salary.monthlySalary = monthlySalaryValidation.error;
+            hasErrors = true;
+            if (firstErrorStep > 2) firstErrorStep = 2;
+        }
+
+        // Validate that total equals monthly salary
+        const total = calculateTotal();
+        const monthly = parseFloat(salaryDetails.monthlySalary) || 0;
+        if (Math.abs(total - monthly) > 0.01) {
+            errors.salary.monthlySalary = `Monthly salary (AED ${monthly.toFixed(2)}) must equal total (AED ${total.toFixed(2)})`;
             hasErrors = true;
             if (firstErrorStep > 2) firstErrorStep = 2;
         }
 
         // Validate Personal Details
+        const dobValidation = validateDate(personalDetails.dateOfBirth, true);
+        if (!dobValidation.isValid) {
+            errors.personal.dateOfBirth = dobValidation.error;
+            hasErrors = true;
+            firstErrorStep = 3;
+        } else {
+            // Check Age > 18
+            const age = parseInt(calculateAgeFromDate(personalDetails.dateOfBirth));
+            if (age < 18) {
+                errors.personal.dateOfBirth = 'Employee must be at least 18 years old';
+                hasErrors = true;
+                firstErrorStep = 3;
+            }
+        }
+
+        // Joined Date Check
+        if (basicDetails.dateOfJoining && personalDetails.dateOfBirth) {
+            const joining = new Date(basicDetails.dateOfJoining);
+            const dob = new Date(personalDetails.dateOfBirth);
+            if (joining <= dob) {
+                errors.basic.dateOfJoining = 'Joining Date must be after Date of Birth';
+                hasErrors = true;
+                firstErrorStep = 1; // Prioritize basic checks if this logic spans both
+            }
+        }
+
         const genderValidation = validateRequired(personalDetails.gender, 'Gender');
         if (!genderValidation.isValid) {
             errors.personal.gender = genderValidation.error;
+            hasErrors = true;
+            firstErrorStep = 3;
+        }
+
+        const fathersNameValidation = validateName(personalDetails.fathersName, false);
+        if (!fathersNameValidation.isValid) {
+            errors.personal.fathersName = fathersNameValidation.error;
+            hasErrors = true;
+            firstErrorStep = 3;
+        }
+
+        const addressLine1Validation = validateRequired(personalDetails.addressLine1, 'Address Line 1');
+        if (!addressLine1Validation.isValid) {
+            errors.personal.addressLine1 = addressLine1Validation.error;
+            hasErrors = true;
+            firstErrorStep = 3;
+        }
+
+        const addressLine2Validation = validateRequired(personalDetails.addressLine2, 'Address Line 2');
+        if (!addressLine2Validation.isValid) {
+            errors.personal.addressLine2 = addressLine2Validation.error;
             hasErrors = true;
             firstErrorStep = 3;
         }
@@ -447,11 +693,6 @@ export default function AddEmployee() {
                 const cleanData = (obj) => {
                     const cleaned = {};
                     for (const [key, value] of Object.entries(obj)) {
-                        // Skip password if portal access is disabled
-                        if (key === 'password' && !obj.enablePortalAccess) {
-                            continue;
-                        }
-
                         // Skip age - backend calculates it
                         if (key === 'age') {
                             continue;
@@ -708,26 +949,6 @@ export default function AddEmployee() {
                                             />
                                             <span className="text-sm font-medium text-gray-700">Enable Portal Access</span>
                                         </label>
-                                        {basicDetails.enablePortalAccess && (
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                    Password <span className="text-red-500">*</span>
-                                                </label>
-                                                <input
-                                                    type="password"
-                                                    value={basicDetails.password}
-                                                    onChange={(e) => handleBasicDetailsChange('password', e.target.value)}
-                                                    onBlur={() => validateBasicDetailField('password', basicDetails.password)}
-                                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${fieldErrors.basic.password ? 'border-red-500 focus:ring-red-500' : 'border-gray-300'
-                                                        }`}
-                                                    placeholder="Enter password for portal access"
-                                                    required
-                                                />
-                                                {fieldErrors.basic.password && (
-                                                    <p className="text-xs text-red-500 mt-1">{fieldErrors.basic.password}</p>
-                                                )}
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
                             )}
@@ -739,29 +960,65 @@ export default function AddEmployee() {
                                         <label className="block text-sm font-medium text-gray-700 mb-2">
                                             Salary (Monthly)
                                         </label>
-                                        <div className="relative">
-                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                        <div className="relative flex items-center">
+                                            <span className="absolute left-4 text-gray-500 text-sm pointer-events-none" style={{ lineHeight: '2.5rem' }}>AED</span>
                                             <input
                                                 type="number"
+                                                step="0.01"
                                                 value={salaryDetails.monthlySalary}
-                                                onChange={(e) => handleSalaryChange('monthlySalary', parseFloat(e.target.value) || 0)}
-                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                onChange={(e) => {
+                                                    const value = e.target.value;
+                                                    // Monthly salary is manually editable only
+                                                    // Auto-calculate basic (50% default) when monthly salary changes
+                                                    if (value) {
+                                                        const monthly = parseFloat(value) || 0;
+                                                        const basicPercent = salaryDetails.basicPercentage || 50;
+                                                        // Round to 2 decimal places to avoid floating point issues
+                                                        const roundedMonthly = Math.round(monthly * 100) / 100;
+                                                        setSalaryDetails(prev => ({
+                                                            ...prev,
+                                                            monthlySalary: roundedMonthly.toString(),
+                                                            basic: (roundedMonthly * basicPercent / 100).toFixed(2),
+                                                            basicPercentage: basicPercent
+                                                        }));
+                                                    } else {
+                                                        setSalaryDetails(prev => ({ ...prev, monthlySalary: value, basic: '' }));
+                                                    }
+                                                    // Clear error when user starts typing
+                                                    if (fieldErrors.salary.monthlySalary) {
+                                                        setFieldErrors(prev => ({
+                                                            ...prev,
+                                                            salary: {
+                                                                ...prev.salary,
+                                                                monthlySalary: ''
+                                                            }
+                                                        }));
+                                                    }
+                                                }}
+                                                onBlur={(e) => {
+                                                    // Round to 2 decimal places on blur
+                                                    const value = e.target.value;
+                                                    if (value) {
+                                                        const monthly = parseFloat(value) || 0;
+                                                        const roundedMonthly = Math.round(monthly * 100) / 100;
+                                                        if (monthly !== roundedMonthly) {
+                                                            setSalaryDetails(prev => ({
+                                                                ...prev,
+                                                                monthlySalary: roundedMonthly.toFixed(2)
+                                                            }));
+                                                        }
+                                                    }
+                                                }}
+                                                className={`w-full pl-16 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 ${fieldErrors.salary.monthlySalary
+                                                    ? 'border-red-500 focus:ring-red-500'
+                                                    : 'border-gray-300 focus:ring-blue-500'
+                                                    }`}
+                                                placeholder="0.00"
                                             />
-                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleSalaryChange('monthlySalary', salaryDetails.monthlySalary + 100)}
-                                                    className="text-gray-400 hover:text-gray-600"
-                                                >
-                                                    ▲
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleSalaryChange('monthlySalary', Math.max(0, salaryDetails.monthlySalary - 100))}
-                                                    className="text-gray-400 hover:text-gray-600"
-                                                >
-                                                    ▼
-                                                </button>
+                                            <div className="min-h-[20px] mt-1">
+                                                {fieldErrors.salary.monthlySalary && (
+                                                    <p className="text-xs text-red-500">{fieldErrors.salary.monthlySalary}</p>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -772,204 +1029,538 @@ export default function AddEmployee() {
                                         <div className="space-y-4">
                                             <div>
                                                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                    Basic ({salaryDetails.basicPercentage}%)
+                                                    Basic (50%)
                                                 </label>
-                                                <div className="relative">
-                                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
-                                                    <input
-                                                        type="number"
-                                                        value={salaryDetails.basic}
-                                                        readOnly
-                                                        className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                                                    />
-                                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleSalaryChange('basicPercentage', Math.min(100, salaryDetails.basicPercentage + 1))}
-                                                            className="text-gray-400 hover:text-gray-600"
-                                                        >
-                                                            ▲
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleSalaryChange('basicPercentage', Math.max(0, salaryDetails.basicPercentage - 1))}
-                                                            className="text-gray-400 hover:text-gray-600"
-                                                        >
-                                                            ▼
-                                                        </button>
+                                                <div className="flex items-center gap-4">
+                                                    <div className="flex-1 relative">
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            min="0"
+                                                            max="100"
+                                                            value={salaryDetails.basicPercentage || 50}
+                                                            onChange={(e) => {
+                                                                const value = e.target.value;
+                                                                if (value === '' || (parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                                                                    handleSalaryChange('basicPercentage', value);
+                                                                }
+                                                            }}
+                                                            className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                            placeholder="50"
+                                                        />
+                                                        <div className="absolute right-1 top-0 bottom-0 flex flex-col">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const current = parseFloat(salaryDetails.basicPercentage) || 50;
+                                                                    const newValue = Math.min(100, current + 1);
+                                                                    handleSalaryChange('basicPercentage', newValue.toString());
+                                                                }}
+                                                                className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-t text-xs"
+                                                                title="Increase"
+                                                            >
+                                                                ▲
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const current = parseFloat(salaryDetails.basicPercentage) || 50;
+                                                                    const newValue = Math.max(0, current - 1);
+                                                                    handleSalaryChange('basicPercentage', newValue.toString());
+                                                                }}
+                                                                className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-b text-xs"
+                                                                title="Decrease"
+                                                            >
+                                                                ▼
+                                                            </button>
+                                                        </div>
+                                                        <span className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                    </div>
+                                                    <div className="flex-1 relative">
+                                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={salaryDetails.basic}
+                                                            onChange={(e) => handleSalaryChange('basic', e.target.value)}
+                                                            className="w-full pl-16 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                            placeholder="0.00"
+                                                        />
                                                     </div>
                                                 </div>
+                                                {fieldErrors.salary.basic && (
+                                                    <p className="text-xs text-red-500 mt-1">{fieldErrors.salary.basic}</p>
+                                                )}
                                             </div>
 
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
+                                            {/* Dynamic Fields */}
+                                            {visibleAllowances.houseRent && (
+                                                <div className="relative group">
                                                     <label className="block text-sm font-medium text-gray-700 mb-2">
                                                         House Rent Allowance
                                                     </label>
-                                                    <div className="relative">
-                                                        <input
-                                                            type="number"
-                                                            value={salaryDetails.houseRentPercentage}
-                                                            onChange={(e) => handleSalaryChange('houseRentPercentage', parseFloat(e.target.value) || 0)}
-                                                            className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                        />
-                                                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">%</span>
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex-1 relative">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                min="0"
+                                                                max="100"
+                                                                value={salaryDetails.houseRentPercentage || ''}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    if (value === '' || (parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                                                                        handleSalaryChange('houseRentPercentage', value);
+                                                                    }
+                                                                }}
+                                                                className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                                placeholder="0"
+                                                            />
+                                                            <div className="absolute right-1 top-0 bottom-0 flex flex-col">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.houseRentPercentage) || 0;
+                                                                        const newValue = Math.min(100, current + 1);
+                                                                        handleSalaryChange('houseRentPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-t text-xs"
+                                                                    title="Increase"
+                                                                >
+                                                                    ▲
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.houseRentPercentage) || 0;
+                                                                        const newValue = Math.max(0, current - 1);
+                                                                        handleSalaryChange('houseRentPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-b text-xs"
+                                                                    title="Decrease"
+                                                                >
+                                                                    ▼
+                                                                </button>
+                                                            </div>
+                                                            <span className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                        </div>
+                                                        <div className="flex-1 relative">
+                                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={salaryDetails.houseRentAllowance}
+                                                                onChange={(e) => handleSalaryChange('houseRentAllowance', e.target.value)}
+                                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0.00"
+                                                            />
                                                             <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('houseRentPercentage', salaryDetails.houseRentPercentage + 1)}
-                                                                className="text-gray-400 hover:text-gray-600"
+                                                                onClick={() => {
+                                                                    setVisibleAllowances(prev => ({ ...prev, houseRent: false }));
+                                                                    setSalaryDetails(prev => ({ ...prev, houseRentAllowance: '', houseRentPercentage: '' }));
+                                                                }}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500 hover:text-red-700 p-1"
+                                                                title="Remove"
                                                             >
-                                                                ▲
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('houseRentPercentage', Math.max(0, salaryDetails.houseRentPercentage - 1))}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▼
+                                                                ✕
                                                             </button>
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div>
-                                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                        Amount
-                                                    </label>
-                                                    <div className="relative">
-                                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
-                                                        <input
-                                                            type="number"
-                                                            value={salaryDetails.houseRentAllowance}
-                                                            readOnly
-                                                            className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                                                        />
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('houseRentAllowance', salaryDetails.houseRentAllowance + 100)}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▲
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('houseRentAllowance', Math.max(0, salaryDetails.houseRentAllowance - 100))}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▼
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
+                                            )}
 
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
+                                            {visibleAllowances.vehicle && (
+                                                <div className="relative group">
+                                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                        Vehicle Allowance
+                                                    </label>
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex-1 relative">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                min="0"
+                                                                max="100"
+                                                                value={salaryDetails.vehiclePercentage || ''}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    if (value === '' || (parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                                                                        handleSalaryChange('vehiclePercentage', value);
+                                                                    }
+                                                                }}
+                                                                className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                                placeholder="0"
+                                                            />
+                                                            <div className="absolute right-1 top-0 bottom-0 flex flex-col">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.vehiclePercentage) || 0;
+                                                                        const newValue = Math.min(100, current + 1);
+                                                                        handleSalaryChange('vehiclePercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-t text-xs"
+                                                                    title="Increase"
+                                                                >
+                                                                    ▲
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.vehiclePercentage) || 0;
+                                                                        const newValue = Math.max(0, current - 1);
+                                                                        handleSalaryChange('vehiclePercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-b text-xs"
+                                                                    title="Decrease"
+                                                                >
+                                                                    ▼
+                                                                </button>
+                                                            </div>
+                                                            <span className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                        </div>
+                                                        <div className="flex-1 relative">
+                                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={salaryDetails.vehicleAllowance}
+                                                                onChange={(e) => handleSalaryChange('vehicleAllowance', e.target.value)}
+                                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0.00"
+                                                            />
+                                                            <button
+                                                                onClick={() => {
+                                                                    setVisibleAllowances(prev => ({ ...prev, vehicle: false }));
+                                                                    setSalaryDetails(prev => ({ ...prev, vehicleAllowance: '', vehiclePercentage: '' }));
+                                                                }}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500 hover:text-red-700 p-1"
+                                                                title="Remove"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {visibleAllowances.fuel && (
+                                                <div className="relative group">
+                                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                        Fuel Allowance
+                                                    </label>
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex-1 relative">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                min="0"
+                                                                max="100"
+                                                                value={salaryDetails.fuelPercentage || ''}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    if (value === '' || (parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                                                                        handleSalaryChange('fuelPercentage', value);
+                                                                    }
+                                                                }}
+                                                                className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                                placeholder="0"
+                                                            />
+                                                            <div className="absolute right-1 top-0 bottom-0 flex flex-col">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.fuelPercentage) || 0;
+                                                                        const newValue = Math.min(100, current + 1);
+                                                                        handleSalaryChange('fuelPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-t text-xs"
+                                                                    title="Increase"
+                                                                >
+                                                                    ▲
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.fuelPercentage) || 0;
+                                                                        const newValue = Math.max(0, current - 1);
+                                                                        handleSalaryChange('fuelPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-b text-xs"
+                                                                    title="Decrease"
+                                                                >
+                                                                    ▼
+                                                                </button>
+                                                            </div>
+                                                            <span className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                        </div>
+                                                        <div className="flex-1 relative">
+                                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={salaryDetails.fuelAllowance}
+                                                                onChange={(e) => handleSalaryChange('fuelAllowance', e.target.value)}
+                                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0.00"
+                                                            />
+                                                            <button
+                                                                onClick={() => {
+                                                                    setVisibleAllowances(prev => ({ ...prev, fuel: false }));
+                                                                    setSalaryDetails(prev => ({ ...prev, fuelAllowance: '', fuelPercentage: '' }));
+                                                                }}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500 hover:text-red-700 p-1"
+                                                                title="Remove"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {visibleAllowances.other && (
+                                                <div className="relative group">
                                                     <label className="block text-sm font-medium text-gray-700 mb-2">
                                                         Other Allowance
                                                     </label>
-                                                    <div className="relative">
-                                                        <input
-                                                            type="number"
-                                                            value={salaryDetails.otherAllowancePercentage}
-                                                            onChange={(e) => handleSalaryChange('otherAllowancePercentage', parseFloat(e.target.value) || 0)}
-                                                            className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                        />
-                                                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">%</span>
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex-1 relative">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                min="0"
+                                                                max="100"
+                                                                value={salaryDetails.otherPercentage || ''}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    if (value === '' || (parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                                                                        handleSalaryChange('otherPercentage', value);
+                                                                    }
+                                                                }}
+                                                                className="w-full px-4 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                                placeholder="0"
+                                                            />
+                                                            <div className="absolute right-1 top-0 bottom-0 flex flex-col">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.otherPercentage) || 0;
+                                                                        const newValue = Math.min(100, current + 1);
+                                                                        handleSalaryChange('otherPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-t text-xs"
+                                                                    title="Increase"
+                                                                >
+                                                                    ▲
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const current = parseFloat(salaryDetails.otherPercentage) || 0;
+                                                                        const newValue = Math.max(0, current - 1);
+                                                                        handleSalaryChange('otherPercentage', newValue.toString());
+                                                                    }}
+                                                                    className="flex-1 px-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-b text-xs"
+                                                                    title="Decrease"
+                                                                >
+                                                                    ▼
+                                                                </button>
+                                                            </div>
+                                                            <span className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                        </div>
+                                                        <div className="flex-1 relative">
+                                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={salaryDetails.otherAllowance}
+                                                                onChange={(e) => handleSalaryChange('otherAllowance', e.target.value)}
+                                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0.00"
+                                                            />
                                                             <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('otherAllowancePercentage', salaryDetails.otherAllowancePercentage + 1)}
-                                                                className="text-gray-400 hover:text-gray-600"
+                                                                onClick={() => {
+                                                                    setVisibleAllowances(prev => ({ ...prev, other: false }));
+                                                                    setSalaryDetails(prev => ({ ...prev, otherAllowance: '', otherPercentage: '' }));
+                                                                }}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500 hover:text-red-700 p-1"
+                                                                title="Remove"
                                                             >
-                                                                ▲
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('otherAllowancePercentage', Math.max(0, salaryDetails.otherAllowancePercentage - 1))}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▼
+                                                                ✕
                                                             </button>
                                                         </div>
                                                     </div>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                        Amount
-                                                    </label>
-                                                    <div className="relative">
-                                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
-                                                        <input
-                                                            type="number"
-                                                            value={salaryDetails.otherAllowance}
-                                                            readOnly
-                                                            className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                                                        />
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('otherAllowance', salaryDetails.otherAllowance + 100)}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▲
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleSalaryChange('otherAllowance', Math.max(0, salaryDetails.otherAllowance - 100))}
-                                                                className="text-gray-400 hover:text-gray-600"
-                                                            >
-                                                                ▼
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-6 relative">
-                                            <button
-                                                onClick={() => setShowAddMoreDropdown(!showAddMoreDropdown)}
-                                                className="text-blue-600 hover:text-blue-700 font-medium flex items-center gap-2"
-                                            >
-                                                <span>+</span> Add More
-                                            </button>
-                                            {showAddMoreDropdown && (
-                                                <div className="absolute left-0 top-8 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-10">
-                                                    <button
-                                                        onClick={() => {
-                                                            setSalaryDetails(prev => ({
-                                                                ...prev,
-                                                                additionalAllowances: [...prev.additionalAllowances, { type: 'Sim Allowance', amount: 0, percentage: 0 }]
-                                                            }));
-                                                            setShowAddMoreDropdown(false);
-                                                        }}
-                                                        className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm text-gray-700"
-                                                    >
-                                                        Sim Allowance
-                                                    </button>
-                                                    <button
-                                                        onClick={() => {
-                                                            setSalaryDetails(prev => ({
-                                                                ...prev,
-                                                                additionalAllowances: [...prev.additionalAllowances, { type: 'Fuel Allowance', amount: 0, percentage: 0 }]
-                                                            }));
-                                                            setShowAddMoreDropdown(false);
-                                                        }}
-                                                        className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm text-gray-700"
-                                                    >
-                                                        Fuel Allowance
-                                                    </button>
                                                 </div>
                                             )}
+
+
+                                            {/* Render Additional/Custom Allowances */}
+                                            {salaryDetails.additionalAllowances.map((allowance, index) => (
+                                                <div key={index} className="relative group">
+                                                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                        {allowance.type || 'Custom Allowance'}
+                                                    </label>
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex-1 relative">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={allowance.percentage || ''}
+                                                                onChange={(e) => {
+                                                                    const newAllowances = [...salaryDetails.additionalAllowances];
+                                                                    const percentage = parseFloat(e.target.value) || 0;
+                                                                    // Use current monthly salary for percentage calculation
+                                                                    const monthly = parseFloat(salaryDetails.monthlySalary) || 0;
+                                                                    newAllowances[index].percentage = percentage;
+                                                                    newAllowances[index].amount = (monthly * percentage / 100).toFixed(2);
+                                                                    setSalaryDetails(prev => ({ ...prev, additionalAllowances: newAllowances }));
+                                                                }}
+                                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0"
+                                                            />
+                                                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">%</span>
+                                                        </div>
+                                                        <div className="flex-1 relative">
+                                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">AED</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={allowance.amount || ''}
+                                                                onChange={(e) => {
+                                                                    const newAllowances = [...salaryDetails.additionalAllowances];
+                                                                    const amount = parseFloat(e.target.value) || 0;
+                                                                    // Use current monthly salary for percentage calculation
+                                                                    const monthly = parseFloat(salaryDetails.monthlySalary) || 0;
+                                                                    newAllowances[index].amount = amount;
+                                                                    if (monthly > 0) {
+                                                                        newAllowances[index].percentage = ((amount / monthly) * 100).toFixed(2);
+                                                                    }
+                                                                    setSalaryDetails(prev => ({ ...prev, additionalAllowances: newAllowances }));
+                                                                }}
+                                                                className="w-full pl-16 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                placeholder="0.00"
+                                                            />
+                                                            <button
+                                                                onClick={() => {
+                                                                    const newAllowances = salaryDetails.additionalAllowances.filter((_, i) => i !== index);
+                                                                    setSalaryDetails(prev => ({ ...prev, additionalAllowances: newAllowances }));
+                                                                }}
+                                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-red-500 hover:text-red-700 p-1"
+                                                                title="Remove"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
                                         </div>
 
-                                        <div className="mt-8 pt-6 border-t">
-                                            <div className="text-right">
-                                                <div className="text-2xl font-bold text-gray-800">
-                                                    Total AED {calculateTotal().toFixed(2)}
+                                        <div className="mt-6">
+                                            <button
+                                                onClick={() => setShowAddMoreModal(true)}
+                                                className="text-blue-600 hover:text-blue-700 font-medium flex items-center gap-2"
+                                                type="button"
+                                            >
+                                                <span className="text-lg font-bold">+</span> Add More
+                                            </button>
+                                        </div>
+
+                                        {/* Add More Modal */}
+                                        <AlertDialog open={showAddMoreModal} onOpenChange={setShowAddMoreModal}>
+                                            <AlertDialogContent className="max-w-md">
+                                                <AlertDialogHeader>
+                                                    <AlertDialogTitle>Add Allowance</AlertDialogTitle>
+                                                    <AlertDialogDescription>
+                                                        Select an allowance type to add to the salary structure.
+                                                    </AlertDialogDescription>
+                                                </AlertDialogHeader>
+                                                <div className="py-4 space-y-2">
+                                                    {!visibleAllowances.houseRent && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setVisibleAllowances(prev => ({ ...prev, houseRent: true }));
+                                                                const balance = calculateBalanceForAllowance('houseRent');
+                                                                setSalaryDetails(prev => ({
+                                                                    ...prev,
+                                                                    houseRentAllowance: balance.amount,
+                                                                    houseRentPercentage: balance.percentage
+                                                                }));
+                                                                setShowAddMoreModal(false);
+                                                            }}
+                                                            className="w-full text-left px-4 py-3 hover:bg-gray-100 text-sm text-gray-700 rounded-lg border border-gray-200 transition-colors"
+                                                        >
+                                                            House Rent Allowance
+                                                        </button>
+                                                    )}
+                                                    {!visibleAllowances.vehicle && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setVisibleAllowances(prev => ({ ...prev, vehicle: true }));
+                                                                const balance = calculateBalanceForAllowance('vehicle');
+                                                                setSalaryDetails(prev => ({
+                                                                    ...prev,
+                                                                    vehicleAllowance: balance.amount,
+                                                                    vehiclePercentage: balance.percentage
+                                                                }));
+                                                                setShowAddMoreModal(false);
+                                                            }}
+                                                            className="w-full text-left px-4 py-3 hover:bg-gray-100 text-sm text-gray-700 rounded-lg border border-gray-200 transition-colors"
+                                                        >
+                                                            Vehicle Allowance
+                                                        </button>
+                                                    )}
+                                                    {!visibleAllowances.fuel && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setVisibleAllowances(prev => ({ ...prev, fuel: true }));
+                                                                const balance = calculateBalanceForAllowance('fuel');
+                                                                setSalaryDetails(prev => ({
+                                                                    ...prev,
+                                                                    fuelAllowance: balance.amount,
+                                                                    fuelPercentage: balance.percentage
+                                                                }));
+                                                                setShowAddMoreModal(false);
+                                                            }}
+                                                            className="w-full text-left px-4 py-3 hover:bg-gray-100 text-sm text-gray-700 rounded-lg border border-gray-200 transition-colors"
+                                                        >
+                                                            Fuel Allowance
+                                                        </button>
+                                                    )}
+                                                    {!visibleAllowances.other && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setVisibleAllowances(prev => ({ ...prev, other: true }));
+                                                                const balance = calculateBalanceForAllowance('other');
+                                                                setSalaryDetails(prev => ({
+                                                                    ...prev,
+                                                                    otherAllowance: balance.amount,
+                                                                    otherPercentage: balance.percentage
+                                                                }));
+                                                                setShowAddMoreModal(false);
+                                                            }}
+                                                            className="w-full text-left px-4 py-3 hover:bg-gray-100 text-sm text-gray-700 rounded-lg border border-gray-200 transition-colors"
+                                                        >
+                                                            Other Allowance
+                                                        </button>
+                                                    )}
+                                                    {visibleAllowances.houseRent && visibleAllowances.vehicle && visibleAllowances.fuel && visibleAllowances.other && (
+                                                        <p className="text-sm text-gray-500 text-center py-2">All allowances have been added</p>
+                                                    )}
                                                 </div>
+                                                <AlertDialogFooter>
+                                                    <AlertDialogCancel>Close</AlertDialogCancel>
+                                                </AlertDialogFooter>
+                                            </AlertDialogContent>
+                                        </AlertDialog>
+
+                                        <div className="mt-8 pt-6 border-t">
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-lg font-semibold text-gray-700">Total:</span>
+                                                <span className="text-2xl font-bold text-gray-800">
+                                                    AED {calculateTotal().toFixed(2)}
+                                                </span>
                                             </div>
                                         </div>
                                     </div>
@@ -994,7 +1585,11 @@ export default function AddEmployee() {
                                                 showYearDropdown
                                                 dropdownMode="select"
                                                 yearDropdownItemNumber={100}
+
                                             />
+                                            {fieldErrors.personal.dateOfBirth && (
+                                                <p className="text-xs text-red-500 mt-1">{fieldErrors.personal.dateOfBirth}</p>
+                                            )}
                                         </div>
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1006,6 +1601,22 @@ export default function AddEmployee() {
                                                 readOnly
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50"
                                                 placeholder="Age"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Nationality
+                                            </label>
+                                            <Select
+                                                instanceId="nationality-select"
+                                                inputId="nationality-select-input"
+                                                value={countryOptions.find(option => option.value === personalDetails.nationality) || null}
+                                                onChange={(option) => handlePersonalDetailsChange('nationality', option?.value || '')}
+                                                options={countryOptions}
+                                                placeholder="Select Nationality"
+                                                styles={selectStyles}
+                                                className="text-sm"
+                                                classNamePrefix="rs"
                                             />
                                         </div>
                                         <div>
@@ -1022,6 +1633,9 @@ export default function AddEmployee() {
                                                 <option value="female">Female</option>
                                                 <option value="other">Other</option>
                                             </select>
+                                            {fieldErrors.personal.gender && (
+                                                <p className="text-xs text-red-500 mt-1">{fieldErrors.personal.gender}</p>
+                                            )}
                                         </div>
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1030,10 +1644,13 @@ export default function AddEmployee() {
                                             <input
                                                 type="text"
                                                 value={personalDetails.fathersName}
-                                                onChange={(e) => handlePersonalDetailsChange('fathersName', e.target.value)}
+                                                onChange={(e) => handleFatherNameChange(e.target.value)}
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 placeholder="Fathers Name"
                                             />
+                                            {fieldErrors.personal.fathersName && (
+                                                <p className="text-xs text-red-500 mt-1">{fieldErrors.personal.fathersName}</p>
+                                            )}
                                         </div>
                                         <div className="col-span-2">
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1046,6 +1663,9 @@ export default function AddEmployee() {
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 placeholder="Address Line 1"
                                             />
+                                            {fieldErrors.personal.addressLine1 && (
+                                                <p className="text-xs text-red-500 mt-1">{fieldErrors.personal.addressLine1}</p>
+                                            )}
                                         </div>
                                         <div className="col-span-2">
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1058,6 +1678,9 @@ export default function AddEmployee() {
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                 placeholder="Address Line 2"
                                             />
+                                            {fieldErrors.personal.addressLine2 && (
+                                                <p className="text-xs text-red-500 mt-1">{fieldErrors.personal.addressLine2}</p>
+                                            )}
                                         </div>
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">

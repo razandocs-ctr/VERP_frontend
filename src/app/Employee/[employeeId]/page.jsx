@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
+import { Country, State, City } from 'country-state-city';
 import Sidebar from '@/components/Sidebar';
 import Navbar from '@/components/Navbar';
 import axiosInstance from '@/utils/axios';
@@ -31,8 +32,17 @@ import {
     validateTextLength,
     validatePhoneNumber,
     validateEmail,
+    validateDate,
+    validateName,
     extractCountryCode
 } from "@/utils/validation";
+import ProfileHeader from './components/ProfileHeader';
+import EmploymentSummary from './components/EmploymentSummary';
+import TabNavigation from './components/TabNavigation';
+import WorkDetailsModal from './components/modals/WorkDetailsModal';
+import { formatPhoneForInput, formatPhoneForSave, normalizeText, normalizeContactNumber, getCountryName, getStateName, getFullLocation, sanitizeContact, contactsAreSame, getInitials, formatDate, calculateDaysUntilExpiry, calculateTenure, getAllCountriesOptions, getAllCountryNames } from './utils/helpers';
+import { departmentOptions, statusOptions, getDesignationOptions } from './utils/constants';
+import { hasPermission, isAdmin } from '@/utils/permissions';
 
 
 export default function EmployeeProfilePage() {
@@ -40,39 +50,6 @@ export default function EmployeeProfilePage() {
     const router = useRouter();
     const employeeId = params?.employeeId;
     const DEFAULT_PHONE_COUNTRY = 'ae';
-    const formatPhoneForInput = (value) => value ? value.replace(/^\+/, '') : '';
-    const formatPhoneForSave = (value) => {
-        if (!value) return '';
-        return value.startsWith('+') ? value : `+${value}`;
-    };
-    const normalizeText = (value = '') => value.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    const normalizeContactNumber = (value) => {
-        if (!value) return '';
-        // Convert to string and trim whitespace
-        const trimmed = value.toString().trim();
-        if (!trimmed) return '';
-        // Remove all non-digit characters except + (spaces, dashes, parentheses, dots, etc.)
-        // Keep only digits and + sign
-        const cleaned = trimmed.replace(/[^\d+]/g, '');
-        if (!cleaned) return '';
-        // Ensure it starts with + for international format
-        // If it already has +, keep it; otherwise add it
-        return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
-    };
-
-    const sanitizeContact = (contact) => ({
-        name: contact?.name?.trim() || '',
-        relation: contact?.relation || 'Self',
-        number: normalizeContactNumber(contact?.number || '')
-    });
-
-    const contactsAreSame = (a, b) => {
-        if (!a || !b) return false;
-        const nameA = (a.name || '').trim().toLowerCase();
-        const nameB = (b.name || '').trim().toLowerCase();
-        return (a.number || '').trim() === (b.number || '').trim() && nameA === nameB;
-    };
 
     const [employee, setEmployee] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -111,17 +88,6 @@ export default function EmployeeProfilePage() {
     const [updatingWorkDetails, setUpdatingWorkDetails] = useState(false);
     const [workDetailsErrors, setWorkDetailsErrors] = useState({});
 
-    const designationOptions = [
-        { value: 'manager', label: 'Manager' },
-        { value: 'developer', label: 'Developer' },
-        { value: 'hr-manager', label: 'HR Manager' }
-    ];
-
-    const departmentOptions = [
-        { value: 'admin', label: 'Administration' },
-        { value: 'hr', label: 'Human Resources' },
-        { value: 'it', label: 'IT' }
-    ];
 
     const statusOptions = [
         { value: 'Probation', label: 'Probation' },
@@ -203,22 +169,17 @@ export default function EmployeeProfilePage() {
     });
     const [showSalaryModal, setShowSalaryModal] = useState(false);
     const [salaryForm, setSalaryForm] = useState({
+        month: '',
         basic: '',
-        houseRentAllowance: '',
         otherAllowance: '',
-        vehicleAllowance: '',
-        fromDate: '',
-        toDate: ''
+        totalSalary: ''
     });
     const [editingSalaryIndex, setEditingSalaryIndex] = useState(null);
     const [savingSalary, setSavingSalary] = useState(false);
     const [salaryFormErrors, setSalaryFormErrors] = useState({
+        month: '',
         basic: '',
-        houseRentAllowance: '',
-        otherAllowance: '',
-        vehicleAllowance: '',
-        fromDate: '',
-        toDate: ''
+        otherAllowance: ''
     });
     const [showAddressModal, setShowAddressModal] = useState(false);
     const [addressModalType, setAddressModalType] = useState('current');
@@ -231,6 +192,7 @@ export default function EmployeeProfilePage() {
         postalCode: ''
     });
     const [savingAddress, setSavingAddress] = useState(false);
+    const [addressFormErrors, setAddressFormErrors] = useState({});
     const [showContactModal, setShowContactModal] = useState(false);
     const [showAddMoreModal, setShowAddMoreModal] = useState(false);
     const [showVisaTypeDropdownInModal, setShowVisaTypeDropdownInModal] = useState(false);
@@ -259,7 +221,6 @@ export default function EmployeeProfilePage() {
         { key: 'spouse', label: 'Spouse Visa' }
     ];
     const selectedVisaLabel = visaTypes.find((type) => type.key === selectedVisaType)?.label || '';
-    const [extractingPassport, setExtractingPassport] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
     const fileInputRef = useRef(null);
     const educationCertificateFileRef = useRef(null);
@@ -320,24 +281,44 @@ export default function EmployeeProfilePage() {
     const [experienceForm, setExperienceForm] = useState(initialExperienceForm);
     const experienceCertificateFileRef = useRef(null);
 
+    // Get all countries for dropdown options
+
     const passportFieldConfig = [
         { label: 'Passport Number', field: 'number', type: 'text', required: true },
-        { label: 'Passport Nationality', field: 'nationality', type: 'text', required: true },
+        { label: 'Passport Nationality', field: 'nationality', type: 'select', required: true, options: getAllCountriesOptions() },
         { label: 'Issue Date', field: 'issueDate', type: 'date', required: true },
         { label: 'Expiry Date', field: 'expiryDate', type: 'date', required: true },
-        { label: 'Country of Issue', field: 'countryOfIssue', type: 'text', required: true }
+        { label: 'Country of Issue', field: 'countryOfIssue', type: 'select', required: true, options: getAllCountriesOptions() }
     ];
     const openEditModal = () => {
         if (!employee || activeTab !== 'basic') return;
+
+        // Format date of birth to yyyy-MM-dd format
+        let formattedDateOfBirth = '';
+        if (employee.dateOfBirth) {
+            const date = new Date(employee.dateOfBirth);
+            if (!isNaN(date.getTime())) {
+                formattedDateOfBirth = date.toISOString().split('T')[0]; // Extract yyyy-MM-dd
+            }
+        }
+
+        // Normalize nationality to full country name (never show codes)
+        const nationalityValue = employee.nationality || employee.country || '';
+        let finalNationality = '';
+        if (nationalityValue) {
+            const countryName = getCountryName(nationalityValue.toString().trim().toUpperCase());
+            finalNationality = countryName || nationalityValue;
+        }
+
         setEditForm({
             employeeId: employee.employeeId || '',
             email: employee.email || employee.workEmail || '',
             contactNumber: formatPhoneForInput(employee.contactNumber || ''),
-            dateOfBirth: employee.dateOfBirth || '',
+            dateOfBirth: formattedDateOfBirth,
             maritalStatus: employee.maritalStatus || '',
             fathersName: employee.fathersName || '',
             gender: employee.gender || '',
-            nationality: employee.nationality || employee.country || '',
+            nationality: finalNationality,
             status: employee.status || '',
             probationPeriod: employee.probationPeriod || null
         });
@@ -347,11 +328,18 @@ export default function EmployeeProfilePage() {
 
     const openWorkDetailsModal = () => {
         if (!employee) return;
+
+        // Set default probation period to 6 months if status is Probation and not set
+        let probationPeriod = employee.probationPeriod;
+        if ((employee.status === 'Probation' || !employee.status) && !probationPeriod) {
+            probationPeriod = 6; // Default 6 months
+        }
+
         setWorkDetailsForm({
             reportingAuthority: employee.reportingAuthority || '',
             overtime: employee.overtime || false,
             status: employee.status || 'Probation',
-            probationPeriod: employee.probationPeriod || null,
+            probationPeriod: probationPeriod,
             designation: employee.designation || '',
             department: employee.department || ''
         });
@@ -366,8 +354,54 @@ export default function EmployeeProfilePage() {
         setShowEducationModal(true);
     };
 
+    // Validate individual education field
+    const validateEducationField = (field, value) => {
+        const errors = { ...educationErrors };
+        let error = '';
+
+        if (field === 'universityOrBoard' || field === 'collegeOrInstitute' || field === 'course' || field === 'fieldOfStudy') {
+            if (!value || value.trim() === '') {
+                error = `${field === 'universityOrBoard' ? 'University / Board' : field === 'collegeOrInstitute' ? 'College / Institute' : field === 'course' ? 'Course' : 'Field of Study'} is required`;
+            } else if (!/^[A-Za-z\s]+$/.test(value)) {
+                error = 'Only letters and spaces are allowed. No numbers or special characters.';
+            }
+        } else if (field === 'completedYear') {
+            if (!value || value.trim() === '') {
+                error = 'Completed Year is required';
+            } else if (!/^\d{4}$/.test(value)) {
+                error = 'Year must be in YYYY format (e.g., 2024)';
+            } else {
+                const year = parseInt(value, 10);
+                const currentYear = new Date().getFullYear();
+                if (year < 1900 || year > currentYear) {
+                    error = `Year must be between 1900 and ${currentYear}`;
+                }
+            }
+        }
+
+        if (error) {
+            errors[field] = error;
+        } else {
+            delete errors[field];
+        }
+        setEducationErrors(errors);
+    };
+
     const handleEducationChange = (field, value) => {
-        setEducationForm(prev => ({ ...prev, [field]: value }));
+        let processedValue = value;
+
+        // Apply input restrictions for text fields (letters and spaces only)
+        if (field === 'universityOrBoard' || field === 'collegeOrInstitute' || field === 'course' || field === 'fieldOfStudy') {
+            // Only allow letters and spaces
+            processedValue = value.replace(/[^A-Za-z\s]/g, '');
+        } else if (field === 'completedYear') {
+            // Only allow digits, max 4 digits
+            processedValue = value.replace(/[^\d]/g, '').slice(0, 4);
+        }
+
+        setEducationForm(prev => ({ ...prev, [field]: processedValue }));
+
+        // Clear error for this field when user starts typing
         if (educationErrors[field]) {
             setEducationErrors(prev => {
                 const updated = { ...prev };
@@ -375,6 +409,9 @@ export default function EmployeeProfilePage() {
                 return updated;
             });
         }
+
+        // Real-time validation
+        validateEducationField(field, processedValue);
     };
 
     const handleEducationFileChange = (e) => {
@@ -386,8 +423,51 @@ export default function EmployeeProfilePage() {
                 certificateData: '',
                 certificateMime: ''
             }));
+            // Clear certificate error
+            if (educationErrors.certificate) {
+                setEducationErrors(prev => {
+                    const updated = { ...prev };
+                    delete updated.certificate;
+                    return updated;
+                });
+            }
             return;
         }
+
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+        const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+        const isValidMimeType = allowedTypes.includes(file.type);
+        const isValidExtension = allowedExtensions.includes(fileExtension);
+
+        if (!isValidMimeType || !isValidExtension) {
+            setEducationErrors(prev => ({
+                ...prev,
+                certificate: 'Only PDF, JPEG, or PNG file formats are allowed.'
+            }));
+            // Clear the file input
+            if (educationCertificateFileRef.current) {
+                educationCertificateFileRef.current.value = '';
+            }
+            setEducationForm(prev => ({
+                ...prev,
+                certificateName: '',
+                certificateData: '',
+                certificateMime: ''
+            }));
+            return;
+        }
+
+        // Clear certificate error if file is valid
+        if (educationErrors.certificate) {
+            setEducationErrors(prev => {
+                const updated = { ...prev };
+                delete updated.certificate;
+                return updated;
+            });
+        }
+
         const reader = new FileReader();
         reader.onload = () => {
             const result = reader.result;
@@ -406,16 +486,73 @@ export default function EmployeeProfilePage() {
         reader.readAsDataURL(file);
     };
 
-    const handleSaveEducation = async () => {
-        const requiredFields = ['universityOrBoard', 'collegeOrInstitute', 'course', 'fieldOfStudy', 'completedYear'];
+    const validateEducationForm = () => {
         const errors = {};
-        requiredFields.forEach((field) => {
-            if (!educationForm[field] || educationForm[field].trim() === '') {
-                errors[field] = 'Required';
+
+        // Validate University / Board
+        if (!educationForm.universityOrBoard || educationForm.universityOrBoard.trim() === '') {
+            errors.universityOrBoard = 'University / Board is required';
+        } else if (!/^[A-Za-z\s]+$/.test(educationForm.universityOrBoard)) {
+            errors.universityOrBoard = 'Only letters and spaces are allowed. No numbers or special characters.';
+        }
+
+        // Validate College / Institute
+        if (!educationForm.collegeOrInstitute || educationForm.collegeOrInstitute.trim() === '') {
+            errors.collegeOrInstitute = 'College / Institute is required';
+        } else if (!/^[A-Za-z\s]+$/.test(educationForm.collegeOrInstitute)) {
+            errors.collegeOrInstitute = 'Only letters and spaces are allowed. No numbers or special characters.';
+        }
+
+        // Validate Course
+        if (!educationForm.course || educationForm.course.trim() === '') {
+            errors.course = 'Course is required';
+        } else if (!/^[A-Za-z\s]+$/.test(educationForm.course)) {
+            errors.course = 'Only letters and spaces are allowed. No numbers or special characters.';
+        }
+
+        // Validate Field of Study
+        if (!educationForm.fieldOfStudy || educationForm.fieldOfStudy.trim() === '') {
+            errors.fieldOfStudy = 'Field of Study is required';
+        } else if (!/^[A-Za-z\s]+$/.test(educationForm.fieldOfStudy)) {
+            errors.fieldOfStudy = 'Only letters and spaces are allowed. No numbers or special characters.';
+        }
+
+        // Validate Completed Year
+        if (!educationForm.completedYear || educationForm.completedYear.trim() === '') {
+            errors.completedYear = 'Completed Year is required';
+        } else if (!/^\d{4}$/.test(educationForm.completedYear)) {
+            errors.completedYear = 'Year must be in YYYY format (e.g., 2024)';
+        } else {
+            const year = parseInt(educationForm.completedYear, 10);
+            const currentYear = new Date().getFullYear();
+            if (year < 1900 || year > currentYear) {
+                errors.completedYear = `Year must be between 1900 and ${currentYear}`;
             }
-        });
-        if (Object.keys(errors).length) {
-            setEducationErrors(errors);
+        }
+
+        // Validate Certificate
+        if (!educationForm.certificateName || !educationForm.certificateData) {
+            errors.certificate = 'Certificate file is required';
+        } else {
+            // Validate file type
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+            const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+            const fileExtension = '.' + educationForm.certificateName.split('.').pop().toLowerCase();
+            const isValidMimeType = allowedTypes.includes(educationForm.certificateMime);
+            const isValidExtension = allowedExtensions.includes(fileExtension);
+
+            if (!isValidMimeType || !isValidExtension) {
+                errors.certificate = 'Only PDF, JPEG, or PNG file formats are allowed.';
+            }
+        }
+
+        setEducationErrors(errors);
+        return Object.keys(errors).length === 0;
+    };
+
+    const handleSaveEducation = async () => {
+        // Validate all fields
+        if (!validateEducationForm()) {
             return;
         }
 
@@ -459,6 +596,10 @@ export default function EmployeeProfilePage() {
             setShowEducationModal(false);
             setEducationForm(initialEducationForm);
             setEditingEducationId(null);
+            setEducationErrors({});
+            if (educationCertificateFileRef.current) {
+                educationCertificateFileRef.current.value = '';
+            }
         } catch (error) {
             console.error('Failed to save education:', error);
             setAlertDialog({
@@ -524,8 +665,67 @@ export default function EmployeeProfilePage() {
         setShowExperienceModal(true);
     };
 
+    // Validate individual experience field
+    const validateExperienceField = (field, value) => {
+        const errors = { ...experienceErrors };
+        let error = '';
+
+        if (field === 'company' || field === 'designation') {
+            if (!value || value.trim() === '') {
+                error = `${field === 'company' ? 'Company' : 'Designation'} is required`;
+            } else if (!/^[A-Za-z0-9\s]+$/.test(value)) {
+                error = 'Only letters, numbers, and spaces are allowed. No special characters.';
+            }
+        } else if (field === 'startDate') {
+            if (!value || value.trim() === '') {
+                error = 'Start Date is required';
+            } else {
+                const date = new Date(value);
+                if (isNaN(date.getTime())) {
+                    error = 'Start Date must be a valid date';
+                } else {
+                    // Re-validate end date if it exists
+                    if (experienceForm.endDate) {
+                        validateExperienceField('endDate', experienceForm.endDate);
+                    }
+                }
+            }
+        } else if (field === 'endDate') {
+            if (!value || value.trim() === '') {
+                error = 'End Date is required';
+            } else {
+                const endDate = new Date(value);
+                if (isNaN(endDate.getTime())) {
+                    error = 'End Date must be a valid date';
+                } else if (experienceForm.startDate) {
+                    const startDate = new Date(experienceForm.startDate);
+                    if (!isNaN(startDate.getTime()) && endDate <= startDate) {
+                        error = 'End Date must be after Start Date';
+                    }
+                }
+            }
+        }
+
+        if (error) {
+            errors[field] = error;
+        } else {
+            delete errors[field];
+        }
+        setExperienceErrors(errors);
+    };
+
     const handleExperienceChange = (field, value) => {
-        setExperienceForm(prev => ({ ...prev, [field]: value }));
+        let processedValue = value;
+
+        // Apply input restrictions for text fields (letters, numbers, and spaces only)
+        if (field === 'company' || field === 'designation') {
+            // Only allow letters, numbers, and spaces
+            processedValue = value.replace(/[^A-Za-z0-9\s]/g, '');
+        }
+
+        setExperienceForm(prev => ({ ...prev, [field]: processedValue }));
+
+        // Clear error for this field when user starts typing
         if (experienceErrors[field]) {
             setExperienceErrors(prev => {
                 const updated = { ...prev };
@@ -533,6 +733,9 @@ export default function EmployeeProfilePage() {
                 return updated;
             });
         }
+
+        // Real-time validation
+        validateExperienceField(field, processedValue);
     };
 
     const handleExperienceFileChange = (e) => {
@@ -544,8 +747,51 @@ export default function EmployeeProfilePage() {
                 certificateData: '',
                 certificateMime: ''
             }));
+            // Clear certificate error
+            if (experienceErrors.certificate) {
+                setExperienceErrors(prev => {
+                    const updated = { ...prev };
+                    delete updated.certificate;
+                    return updated;
+                });
+            }
             return;
         }
+
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+        const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+        const isValidMimeType = allowedTypes.includes(file.type);
+        const isValidExtension = allowedExtensions.includes(fileExtension);
+
+        if (!isValidMimeType || !isValidExtension) {
+            setExperienceErrors(prev => ({
+                ...prev,
+                certificate: 'Only PDF, JPEG, or PNG file formats are allowed.'
+            }));
+            // Clear the file input
+            if (experienceCertificateFileRef.current) {
+                experienceCertificateFileRef.current.value = '';
+            }
+            setExperienceForm(prev => ({
+                ...prev,
+                certificateName: '',
+                certificateData: '',
+                certificateMime: ''
+            }));
+            return;
+        }
+
+        // Clear certificate error if file is valid
+        if (experienceErrors.certificate) {
+            setExperienceErrors(prev => {
+                const updated = { ...prev };
+                delete updated.certificate;
+                return updated;
+            });
+        }
+
         const reader = new FileReader();
         reader.onload = () => {
             const result = reader.result;
@@ -564,26 +810,71 @@ export default function EmployeeProfilePage() {
         reader.readAsDataURL(file);
     };
 
-    const handleSaveExperience = async () => {
-        const requiredFields = ['company', 'designation', 'startDate'];
+    const validateExperienceForm = () => {
         const errors = {};
-        requiredFields.forEach((field) => {
-            if (!experienceForm[field] || experienceForm[field].trim() === '') {
-                errors[field] = 'Required';
-            }
-        });
 
-        // Validate date range
-        if (experienceForm.startDate && experienceForm.endDate) {
+        // Validate Company
+        if (!experienceForm.company || experienceForm.company.trim() === '') {
+            errors.company = 'Company is required';
+        } else if (!/^[A-Za-z0-9\s]+$/.test(experienceForm.company)) {
+            errors.company = 'Only letters, numbers, and spaces are allowed. No special characters.';
+        }
+
+        // Validate Designation
+        if (!experienceForm.designation || experienceForm.designation.trim() === '') {
+            errors.designation = 'Designation is required';
+        } else if (!/^[A-Za-z0-9\s]+$/.test(experienceForm.designation)) {
+            errors.designation = 'Only letters, numbers, and spaces are allowed. No special characters.';
+        }
+
+        // Validate Start Date
+        if (!experienceForm.startDate || experienceForm.startDate.trim() === '') {
+            errors.startDate = 'Start Date is required';
+        } else {
             const startDate = new Date(experienceForm.startDate);
-            const endDate = new Date(experienceForm.endDate);
-            if (endDate < startDate) {
-                errors.endDate = 'End Date must be after Start Date';
+            if (isNaN(startDate.getTime())) {
+                errors.startDate = 'Start Date must be a valid date';
             }
         }
 
-        if (Object.keys(errors).length) {
-            setExperienceErrors(errors);
+        // Validate End Date
+        if (!experienceForm.endDate || experienceForm.endDate.trim() === '') {
+            errors.endDate = 'End Date is required';
+        } else {
+            const endDate = new Date(experienceForm.endDate);
+            if (isNaN(endDate.getTime())) {
+                errors.endDate = 'End Date must be a valid date';
+            } else if (experienceForm.startDate) {
+                const startDate = new Date(experienceForm.startDate);
+                if (!isNaN(startDate.getTime()) && endDate <= startDate) {
+                    errors.endDate = 'End Date must be after Start Date';
+                }
+            }
+        }
+
+        // Validate Certificate
+        if (!experienceForm.certificateName || !experienceForm.certificateData) {
+            errors.certificate = 'Certificate file is required';
+        } else {
+            // Validate file type
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+            const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+            const fileExtension = '.' + experienceForm.certificateName.split('.').pop().toLowerCase();
+            const isValidMimeType = allowedTypes.includes(experienceForm.certificateMime);
+            const isValidExtension = allowedExtensions.includes(fileExtension);
+
+            if (!isValidMimeType || !isValidExtension) {
+                errors.certificate = 'Only PDF, JPEG, or PNG file formats are allowed.';
+            }
+        }
+
+        setExperienceErrors(errors);
+        return Object.keys(errors).length === 0;
+    };
+
+    const handleSaveExperience = async () => {
+        // Validate all fields
+        if (!validateExperienceForm()) {
             return;
         }
 
@@ -593,7 +884,7 @@ export default function EmployeeProfilePage() {
                 company: experienceForm.company.trim(),
                 designation: experienceForm.designation.trim(),
                 startDate: experienceForm.startDate,
-                endDate: experienceForm.endDate || null,
+                endDate: experienceForm.endDate,
                 certificate: experienceForm.certificateName && experienceForm.certificateData
                     ? {
                         name: experienceForm.certificateName,
@@ -623,6 +914,10 @@ export default function EmployeeProfilePage() {
             setShowExperienceModal(false);
             setExperienceForm(initialExperienceForm);
             setEditingExperienceId(null);
+            setExperienceErrors({});
+            if (experienceCertificateFileRef.current) {
+                experienceCertificateFileRef.current.value = '';
+            }
         } catch (error) {
             console.error('Failed to save experience:', error);
             setAlertDialog({
@@ -678,45 +973,17 @@ export default function EmployeeProfilePage() {
         }
     };
 
-    const handleWorkDetailsChange = (field, value) => {
-        setWorkDetailsForm(prev => ({ ...prev, [field]: value }));
-        // Clear probation period if status changes from Probation
-        if (field === 'status' && value !== 'Probation') {
-            setWorkDetailsForm(prev => ({ ...prev, probationPeriod: null }));
-            // Clear probation period error when status changes
-            if (workDetailsErrors.probationPeriod) {
-                setWorkDetailsErrors(prev => {
-                    const newErrors = { ...prev };
-                    delete newErrors.probationPeriod;
-                    return newErrors;
-                });
-            }
-        }
-    };
-
     const handleUpdateWorkDetails = async () => {
         if (!employee) return;
 
-        // Validate: If status is Probation, probation period is required
-        const errors = {};
-        if (workDetailsForm.status === 'Probation' && !workDetailsForm.probationPeriod) {
-            errors.probationPeriod = 'Probation Period is required when Work Status is Probation';
-        }
-
-        if (Object.keys(errors).length > 0) {
-            setWorkDetailsErrors(errors);
-            setAlertDialog({
-                open: true,
-                title: "Validation Error",
-                description: "Please fill all required fields. Probation Period is required when Work Status is Probation."
-            });
-            return;
-        }
-
-        setWorkDetailsErrors({});
-
         try {
             setUpdatingWorkDetails(true);
+
+            // Set default probation period to 6 months if status is Probation and not set
+            let probationPeriod = workDetailsForm.probationPeriod;
+            if (workDetailsForm.status === 'Probation' && !probationPeriod) {
+                probationPeriod = 6; // Default 6 months
+            }
 
             const updatePayload = {
                 reportingAuthority: workDetailsForm.reportingAuthority || null,
@@ -728,7 +995,24 @@ export default function EmployeeProfilePage() {
 
             // Probation Period is required if status is Probation
             if (workDetailsForm.status === 'Probation') {
-                updatePayload.probationPeriod = workDetailsForm.probationPeriod;
+                updatePayload.probationPeriod = probationPeriod;
+
+                // Check if probation period has ended based on joining date
+                if (employee.dateOfJoining && probationPeriod) {
+                    const joiningDate = new Date(employee.dateOfJoining);
+                    const probationEndDate = new Date(joiningDate);
+                    probationEndDate.setMonth(probationEndDate.getMonth() + probationPeriod);
+
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    probationEndDate.setHours(0, 0, 0, 0);
+
+                    // If probation period has ended, automatically change to Permanent
+                    if (probationEndDate <= today) {
+                        updatePayload.status = 'Permanent';
+                        updatePayload.probationPeriod = null;
+                    }
+                }
             } else {
                 updatePayload.probationPeriod = null;
             }
@@ -784,27 +1068,22 @@ export default function EmployeeProfilePage() {
     };
 
     const handlePersonalChange = (field, value, country = null) => {
-        // For phone numbers, remove spaces and validate
+        // For phone numbers, remove non-digits and validate
         if (field === 'contactNumber') {
-            // Remove all spaces from phone number
-            const cleanedValue = value.replace(/\s/g, '');
+            const cleanedValue = value.replace(/\D/g, '');
             setPersonalForm(prev => ({ ...prev, [field]: cleanedValue }));
 
             // Extract and store country code - use ISO country code for libphonenumber-js
-            // react-phone-input-2 provides country.countryCode (ISO code like 'ae') and country.dialCode (numeric like '971')
-            let countryCode = selectedCountryCode; // default
+            let countryCode = selectedCountryCode;
             if (country) {
-                // Prefer ISO country code (e.g., 'ae', 'in') for libphonenumber-js
                 if (country.countryCode) {
-                    countryCode = country.countryCode; // ISO code (e.g., 'ae')
+                    countryCode = country.countryCode;
                     setSelectedCountryCode(country.countryCode);
                 } else if (country.dialCode) {
-                    // Fallback to dial code if countryCode not available
                     countryCode = country.dialCode;
                     setSelectedCountryCode(country.dialCode);
                 }
             } else {
-                // Try to extract from value if country object not provided
                 const extracted = extractCountryCode(cleanedValue);
                 if (extracted) {
                     countryCode = extracted;
@@ -812,24 +1091,92 @@ export default function EmployeeProfilePage() {
                 }
             }
 
-            // Validate phone number using libphonenumber-js
-            // react-phone-input-2 returns value with country code included
             const validation = validatePhoneNumber(cleanedValue, countryCode, true);
-            setPersonalFormErrors(prev => ({
-                ...prev,
-                contactNumber: validation.isValid ? '' : validation.error
-            }));
-        } else {
-            setPersonalForm(prev => ({ ...prev, [field]: value }));
-            // Clear error for this field if it exists
-            if (personalFormErrors[field]) {
-                setPersonalFormErrors(prev => {
-                    const updated = { ...prev };
-                    delete updated[field];
-                    return updated;
-                });
+            setPersonalFormErrors(prev => {
+                const updated = { ...prev };
+                if (!validation.isValid) {
+                    updated.contactNumber = validation.error;
+                } else {
+                    delete updated.contactNumber;
+                }
+                return updated;
+            });
+            return;
+        }
+
+        // Apply input restrictions for text fields
+        let processedValue = value;
+        if (field === 'fathersName') {
+            processedValue = value.replace(/[^A-Za-z\s]/g, '');
+        } else if (field === 'nationality') {
+            processedValue = value.replace(/[^A-Za-z\s'-]/g, '');
+        }
+
+        // Normalize date input to YYYY-MM-DD when a time component is present
+        if (field === 'dateOfBirth') {
+            processedValue = value.includes('T') ? value.split('T')[0] : value;
+        }
+
+        setPersonalForm(prev => ({ ...prev, [field]: processedValue }));
+
+        // Real-time validation for personal fields
+        let error = '';
+        if (field === 'email') {
+            const emailValidation = validateEmail(processedValue, true);
+            error = emailValidation.isValid ? '' : emailValidation.error;
+        } else if (field === 'dateOfBirth') {
+            const dobValidation = validateDate(processedValue, true);
+            error = dobValidation.isValid ? '' : dobValidation.error;
+        } else if (field === 'maritalStatus') {
+            const validMaritalStatuses = ['single', 'married', 'divorced', 'widowed'];
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'Marital Status is required';
+            } else if (!validMaritalStatuses.includes(processedValue.toLowerCase())) {
+                error = 'Please select a valid marital status option';
+            }
+        } else if (field === 'fathersName') {
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'Father\'s Name is required';
+            } else {
+                const trimmed = processedValue.trim();
+                if (trimmed.length < 2) {
+                    error = 'Father\'s Name must be at least 2 characters';
+                } else if (!/^[A-Za-z\s]+$/.test(trimmed)) {
+                    error = 'Father\'s Name must contain only letters and spaces';
+                }
+            }
+        } else if (field === 'gender') {
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'Gender is required';
+            } else {
+                const validGenders = ['male', 'female', 'other'];
+                if (!validGenders.includes(processedValue.toLowerCase())) {
+                    error = 'Please select a valid gender option';
+                }
+            }
+        } else if (field === 'nationality') {
+            const nationalityValidation = validateRequired(processedValue, 'Nationality');
+            if (!nationalityValidation.isValid) {
+                error = nationalityValidation.error;
+            } else {
+                const trimmedNationality = processedValue.trim();
+                if (trimmedNationality.length < 2) {
+                    error = 'Nationality must be at least 2 characters';
+                } else if (!/^[A-Za-z\s\'-]+$/.test(trimmedNationality)) {
+                    error = 'Nationality must contain only letters, spaces, hyphens, and apostrophes';
+                }
             }
         }
+
+        setPersonalFormErrors(prev => {
+            const updated = { ...prev };
+            if (error) {
+                updated[field] = error;
+            } else {
+                delete updated[field];
+            }
+            return updated;
+        });
     };
 
     const handleOpenContactModal = (contactId = null, contactIndex = null) => {
@@ -871,29 +1218,22 @@ export default function EmployeeProfilePage() {
     };
 
     const handleContactChange = (index, field, value, country = null) => {
-        // For phone numbers, remove spaces and validate
         if (field === 'number') {
-            // Remove all spaces from phone number
-            const cleanedValue = value.replace(/\s/g, '');
+            const cleanedValue = value.replace(/\D/g, '');
             setContactForms(prev => prev.map((contact, i) =>
                 (i === index ? { ...contact, [field]: cleanedValue } : contact)
             ));
 
-            // Extract and store country code - use ISO country code for libphonenumber-js
-            // react-phone-input-2 provides country.countryCode (ISO code like 'ae') and country.dialCode (numeric like '971')
-            let countryCode = contactCountryCode; // default
+            let countryCode = contactCountryCode;
             if (country) {
-                // Prefer ISO country code (e.g., 'ae', 'in') for libphonenumber-js
                 if (country.countryCode) {
-                    countryCode = country.countryCode; // ISO code (e.g., 'ae')
+                    countryCode = country.countryCode;
                     setContactCountryCode(country.countryCode);
                 } else if (country.dialCode) {
-                    // Fallback to dial code if countryCode not available
                     countryCode = country.dialCode;
                     setContactCountryCode(country.dialCode);
                 }
             } else {
-                // Try to extract from value if country object not provided
                 const extracted = extractCountryCode(cleanedValue);
                 if (extracted) {
                     countryCode = extracted;
@@ -901,18 +1241,54 @@ export default function EmployeeProfilePage() {
                 }
             }
 
-            // Validate phone number using libphonenumber-js
-            // react-phone-input-2 returns value with country code included
             const validation = validatePhoneNumber(cleanedValue, countryCode, true);
-            setContactFormErrors(prev => ({
-                ...prev,
-                [`${index}_number`]: validation.isValid ? '' : validation.error
-            }));
-        } else {
-            setContactForms(prev => prev.map((contact, i) =>
-                (i === index ? { ...contact, [field]: value } : contact)
-            ));
+            setContactFormErrors(prev => {
+                const updated = { ...prev };
+                if (!validation.isValid) {
+                    updated[`${index}_number`] = validation.error;
+                } else {
+                    delete updated[`${index}_number`];
+                }
+                return updated;
+            });
+            return;
         }
+
+        let processedValue = value;
+        if (field === 'name') {
+            processedValue = value.replace(/[^A-Za-z\s]/g, '');
+        }
+
+        setContactForms(prev => prev.map((contact, i) =>
+            (i === index ? { ...contact, [field]: processedValue } : contact)
+        ));
+
+        // Real-time validation for non-phone fields
+        let error = '';
+        if (field === 'name') {
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'Contact Name is required';
+            } else if (!/^[A-Za-z\s]+$/.test(processedValue.trim())) {
+                error = 'Contact Name must contain letters and spaces only';
+            }
+        } else if (field === 'relation') {
+            const validRelations = ['Self', 'Father', 'Mother', 'Spouse', 'Friend', 'Other'];
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'Relation is required';
+            } else if (!validRelations.includes(processedValue)) {
+                error = 'Please select a valid relation';
+            }
+        }
+
+        setContactFormErrors(prev => {
+            const updated = { ...prev };
+            if (error) {
+                updated[`${index}_${field}`] = error;
+            } else {
+                delete updated[`${index}_${field}`];
+            }
+            return updated;
+        });
     };
 
     const handleAddContactRow = () => {
@@ -926,8 +1302,8 @@ export default function EmployeeProfilePage() {
     const handleEditChange = (field, value, country = null) => {
         // For phone numbers, remove spaces and validate
         if (field === 'contactNumber') {
-            // Remove all spaces from phone number
-            const cleanedValue = value.replace(/\s/g, '');
+            // Keep digits only for contact number entry
+            const cleanedValue = value.replace(/\D/g, '');
             setEditForm(prev => ({ ...prev, [field]: cleanedValue }));
 
             // Extract and store country code - use ISO country code for libphonenumber-js
@@ -951,649 +1327,359 @@ export default function EmployeeProfilePage() {
                 }
             }
 
-            // Validate phone number using libphonenumber-js
+            // Validate contact number (required, valid international format)
             const validation = validatePhoneNumber(cleanedValue, countryCode, true);
-            setEditFormErrors(prev => ({
-                ...prev,
-                contactNumber: validation.isValid ? '' : validation.error
-            }));
+            if (!validation.isValid) {
+                setEditFormErrors(prev => ({
+                    ...prev,
+                    contactNumber: validation.error
+                }));
+            } else {
+                // Clear error if valid
+                setEditFormErrors(prev => {
+                    const updated = { ...prev };
+                    delete updated.contactNumber;
+                    return updated;
+                });
+            }
         } else {
+            // Apply input restrictions based on field type
+            let processedValue = value;
+
+            // String fields: fathersName (letters and spaces only), nationality (letters, spaces, hyphens, apostrophes)
+            if (field === 'fathersName') {
+                // Allow only letters and spaces (no numbers or special characters)
+                processedValue = value.replace(/[^A-Za-z\s]/g, '');
+            } else if (field === 'nationality') {
+                // Allow letters, spaces, hyphens, and apostrophes
+                processedValue = value.replace(/[^A-Za-z\s'-]/g, '');
+            }
+
+            // Date field: ensure proper format
+            if (field === 'dateOfBirth') {
+                // If it's a full ISO date string, extract just the date part
+                if (value.includes('T')) {
+                    processedValue = value.split('T')[0];
+                } else {
+                    processedValue = value;
+                }
+            }
+
             setEditForm(prev => {
-                const updated = { ...prev, [field]: value };
+                const updated = { ...prev, [field]: processedValue };
                 // Clear probationPeriod if status changes from Probation to something else
-                if (field === 'status' && value !== 'Probation') {
+                if (field === 'status' && processedValue !== 'Probation') {
                     updated.probationPeriod = null;
                 }
                 return updated;
             });
-            // Clear error for this field if it exists
-            if (editFormErrors[field]) {
-                setEditFormErrors(prev => {
-                    const updated = { ...prev };
-                    delete updated[field];
-                    return updated;
-                });
+
+            // Real-time validation for other fields
+            let error = '';
+
+            if (field === 'email') {
+                const emailValidation = validateEmail(processedValue, true);
+                error = emailValidation.isValid ? '' : emailValidation.error;
+            } else if (field === 'dateOfBirth') {
+                const dobValidation = validateDate(processedValue, true);
+                error = dobValidation.isValid ? '' : dobValidation.error;
+            } else if (field === 'maritalStatus') {
+                // Validate Marital Status: must be from predefined options
+                const validMaritalStatuses = ['single', 'married', 'divorced', 'widowed'];
+                if (!processedValue || processedValue.trim() === '') {
+                    error = 'Marital Status is required';
+                } else if (!validMaritalStatuses.includes(processedValue.toLowerCase())) {
+                    error = 'Please select a valid marital status option';
+                }
+            } else if (field === 'fathersName') {
+                // Validate Father's Name: letters and spaces only
+                if (!processedValue || processedValue.trim() === '') {
+                    error = 'Father\'s Name is required';
+                } else {
+                    const trimmed = processedValue.trim();
+                    if (trimmed.length < 2) {
+                        error = 'Father\'s Name must be at least 2 characters';
+                    } else if (!/^[A-Za-z\s]+$/.test(trimmed)) {
+                        error = 'Father\'s Name must contain only letters and spaces';
+                    }
+                }
+            } else if (field === 'gender') {
+                if (!processedValue || processedValue.trim() === '') {
+                    error = 'Gender is required';
+                } else {
+                    const validGenders = ['male', 'female', 'other'];
+                    if (!validGenders.includes(processedValue.toLowerCase())) {
+                        error = 'Please select a valid gender option';
+                    }
+                }
+            } else if (field === 'nationality') {
+                const nationalityValidation = validateRequired(processedValue, 'Nationality');
+                if (!nationalityValidation.isValid) {
+                    error = nationalityValidation.error;
+                } else {
+                    const trimmedNationality = processedValue.trim();
+                    if (trimmedNationality.length < 2) {
+                        error = 'Nationality must be at least 2 characters';
+                    } else if (!/^[A-Za-z\s'-]+$/.test(trimmedNationality)) {
+                        error = 'Nationality must contain only letters, spaces, hyphens, and apostrophes';
+                    }
+                }
             }
+
+            // Update errors
+            setEditFormErrors(prev => {
+                const updated = { ...prev };
+                if (error) {
+                    updated[field] = error;
+                } else {
+                    delete updated[field];
+                }
+                return updated;
+            });
         }
     };
 
     const handlePassportChange = (field, value) => {
-        setPassportForm(prev => ({ ...prev, [field]: value }));
+        // Apply input restrictions
+        let processedValue = value;
+
+        // Passport number: only alphanumeric, no special characters
+        if (field === 'number') {
+            processedValue = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        }
+        // For select fields (nationality, countryOfIssue), use value as-is
+        // No processing needed for select dropdowns
+
+        setPassportForm(prev => ({ ...prev, [field]: processedValue }));
+
+        // Clear error for this field when user starts typing/selecting
+        if (passportErrors[field]) {
+            setPassportErrors(prev => {
+                const updated = { ...prev };
+                delete updated[field];
+                return updated;
+            });
+        }
+
+        // Real-time validation
+        validatePassportField(field, processedValue);
     };
 
-    // Extract text from PDF - COMMENTED OUT
-    /* const extractTextFromPDF = async (file) => {
-        try {
-            // Dynamic import of pdfjs-dist
-            const pdfjsLib = await import('pdfjs-dist');
+    // Validate individual passport field
+    const validatePassportField = (field, value) => {
+        const errors = { ...passportErrors };
+        let error = '';
 
-            // Set worker source - try local first, then CDN
-            if (typeof window !== 'undefined') {
-                // Try local worker file first
-                pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+        if (field === 'number') {
+            if (!value || value.trim() === '') {
+                error = 'Passport number is required';
+            } else if (!/^[A-Za-z0-9]+$/.test(value)) {
+                error = 'Passport number must be alphanumeric with no special characters';
+            }
+        } else if (field === 'nationality') {
+            if (!value || value.trim() === '') {
+                error = 'Passport nationality is required';
             } else {
-                // Fallback to CDN for SSR
-                pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
-            }
-
-            const arrayBuffer = await file.arrayBuffer();
-            const pdf = await pdfjsLib.getDocument({
-                data: arrayBuffer,
-                useWorkerFetch: false,
-                isEvalSupported: false,
-                useSystemFonts: true
-            }).promise;
-
-            let fullText = '';
-
-            for (let i = 1; i <= pdf.numPages; i++) {
-                const page = await pdf.getPage(i);
-                const textContent = await page.getTextContent();
-                const pageText = textContent.items.map(item => item.str).join(' ');
-                fullText += pageText + ' ';
-                console.log(`📄 Page ${i} text length:`, pageText.length);
-            }
-
-            console.log('========================================');
-            console.log('📄 EXTRACTED TEXT FROM PDF:');
-            console.log('========================================');
-            console.log('Total Pages:', pdf.numPages);
-            console.log('Total Text Length:', fullText.length);
-            console.log('----------------------------------------');
-            console.log('FULL EXTRACTED TEXT:');
-            console.log(fullText);
-            console.log('----------------------------------------');
-            console.log('First 2000 characters:');
-            console.log(fullText.substring(0, 2000));
-            console.log('========================================');
-
-            return fullText;
-        } catch (error) {
-            console.error('Error extracting PDF text:', error);
-            // Try alternative worker configuration with jsdelivr CDN
-            try {
-                const pdfjsLib = await import('pdfjs-dist');
-                pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
-
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument({
-                    data: arrayBuffer,
-                    useWorkerFetch: false,
-                    isEvalSupported: false
-                }).promise;
-
-                let fullText = '';
-
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const textContent = await page.getTextContent();
-                    const pageText = textContent.items.map(item => item.str).join(' ');
-                    fullText += pageText + ' ';
-                    console.log(`📄 Page ${i} text length:`, pageText.length);
-                }
-
-                console.log('========================================');
-                console.log('📄 EXTRACTED TEXT FROM PDF (Retry):');
-                console.log('========================================');
-                console.log('Total Pages:', pdf.numPages);
-                console.log('Total Text Length:', fullText.length);
-                console.log('----------------------------------------');
-                console.log('FULL EXTRACTED TEXT:');
-                console.log(fullText);
-                console.log('----------------------------------------');
-                console.log('First 2000 characters:');
-                console.log(fullText.substring(0, 2000));
-                console.log('========================================');
-
-                return fullText;
-            } catch (retryError) {
-                console.error('Retry failed:', retryError);
-                throw new Error('Failed to extract text from PDF. Please enter details manually.');
-            }
-        }
-    }; */
-
-    // Parse passport details from extracted text - COMMENTED OUT
-    /* const parsePassportDetails = (text) => {
-        console.log('🔍 Parsing passport details from text...');
-        console.log('📄 Full extracted text:', text);
-        console.log('📄 Text length:', text.length);
-        console.log('📄 First 1000 chars:', text.substring(0, 1000));
-
-        const details = {
-            number: '',
-            issueDate: '',
-            countryOfIssue: '',
-            expiryDate: ''
-        };
-
-        // Try multiple patterns for passport number
-        const passportPatterns = [
-            /(?:पासपोर्ट\s*न\.|Passport\s*No\.?)[\s:]*([A-Z]{1,2}\d{6,9})/i,
-            /(?:passport\s*number|passport\s*no|pass\s*no)[\s:]*([A-Z0-9]{6,12})/i,
-            /Passport\s*No[.:]\s*([A-Z]{1,2}\d{6,9})/i,
-            /\b([A-Z]{2}\d{6})\b/, // AF637144 pattern
-            /\b([A-Z]{1,2}\d{6,9})\b/ // Generic pattern
-        ];
-
-        for (let i = 0; i < passportPatterns.length; i++) {
-            const match = text.match(passportPatterns[i]);
-            if (match && match[1] && match[1].length >= 7) {
-                details.number = match[1].trim();
-                console.log(`✅ Found passport number (pattern ${i + 1}):`, details.number);
-                break;
-            }
-        }
-
-        if (!details.number) {
-            console.log('❌ Could not find passport number');
-            // Try to find any alphanumeric code that looks like a passport number
-            const allMatches = text.match(/\b([A-Z]{1,2}\d{6,9})\b/g);
-            if (allMatches) {
-                console.log('🔍 Found potential passport numbers:', allMatches);
-                details.number = allMatches[0];
-                console.log('✅ Using first match:', details.number);
-            }
-        }
-
-        // Try multiple patterns for issue date
-        const issueDatePatterns = [
-            /(?:जारी\s*करने\s*की\s*तिथि|Date\s*of\s*Issue)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /(?:date\s*of\s*issue|issued|issue\s*date)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /Date\s*of\s*Issue[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/i,
-            /(\d{1,2}\/\d{1,2}\/\d{4})/g // Find all dates and use the first one
-        ];
-
-        for (let i = 0; i < issueDatePatterns.length; i++) {
-            const match = text.match(issueDatePatterns[i]);
-            if (match) {
-                const dateStr = match[1];
-                const formatted = formatDateFromText(dateStr);
-                if (formatted) {
-                    details.issueDate = formatted;
-                    console.log(`✅ Found issue date (pattern ${i + 1}):`, dateStr, '→', formatted);
-                    break;
+                const validCountries = getAllCountryNames();
+                if (!validCountries.includes(value.trim())) {
+                    error = 'Please select a valid country from the list';
                 }
             }
-        }
-
-        if (!details.issueDate) {
-            console.log('❌ Could not find issue date');
-            // Try to find any date pattern
-            const dateMatches = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/g);
-            if (dateMatches && dateMatches.length > 0) {
-                console.log('🔍 Found dates in text:', dateMatches);
-                details.issueDate = formatDateFromText(dateMatches[0]);
-                console.log('✅ Using first date as issue date:', details.issueDate);
-            }
-        }
-
-        // Try multiple patterns for place of issue
-        const placePatterns = [
-            /(?:जारी\s*करने\s*का\s*स्थान|Place\s*of\s*Issue)[\s:]*([A-Z][a-zA-Z\s]{2,30})/i,
-            /(?:place\s*of\s*issue|issued\s*at|issued\s*in)[\s:]*([A-Z][a-zA-Z\s]{2,30})/i,
-            /Place\s*of\s*Issue[:\s]*([A-Z][A-Z\s]{2,20})/i,
-            /COCHIN|MUMBAI|DELHI|KOLKATA|CHENNAI|BANGALORE|HYDERABAD/i // Common Indian passport issue places
-        ];
-
-        for (let i = 0; i < placePatterns.length; i++) {
-            const match = text.match(placePatterns[i]);
-            if (match) {
-                details.countryOfIssue = match[1] ? match[1].trim() : match[0].trim();
-                console.log(`✅ Found place of issue (pattern ${i + 1}):`, details.countryOfIssue);
-                break;
-            }
-        }
-
-        if (!details.countryOfIssue) {
-            console.log('❌ Could not find place of issue');
-        }
-
-        // Try multiple patterns for expiry date
-        const expiryDatePatterns = [
-            /(?:समाप्ति\s*की\s*तिथि|Date\s*of\s*Expiry)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /(?:date\s*of\s*expiry|expires|expiry\s*date|valid\s*until)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /Date\s*of\s*Expiry[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/i
-        ];
-
-        for (let i = 0; i < expiryDatePatterns.length; i++) {
-            const match = text.match(expiryDatePatterns[i]);
-            if (match) {
-                const dateStr = match[1];
-                const formatted = formatDateFromText(dateStr);
-                if (formatted) {
-                    details.expiryDate = formatted;
-                    console.log(`✅ Found expiry date (pattern ${i + 1}):`, dateStr, '→', formatted);
-                    break;
-                }
-            }
-        }
-
-        if (!details.expiryDate) {
-            console.log('❌ Could not find expiry date');
-            // Try to find the second date (usually expiry comes after issue)
-            const dateMatches = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/g);
-            if (dateMatches && dateMatches.length > 1) {
-                console.log('🔍 Found multiple dates:', dateMatches);
-                details.expiryDate = formatDateFromText(dateMatches[1]);
-                console.log('✅ Using second date as expiry date:', details.expiryDate);
-            }
-        }
-
-        console.log('📋 Final extracted details:', details);
-        return details;
-    }; */
-
-    // Format date from text to YYYY-MM-DD format - COMMENTED OUT
-    /* const formatDateFromText = (dateStr) => {
-        // Handle different date formats
-        const formats = [
-            /(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/, // DD.MM.YYYY or DD/MM/YYYY
-        ];
-
-        for (const format of formats) {
-            const match = dateStr.match(format);
-            if (match) {
-                let day = match[1].padStart(2, '0');
-                let month = match[2].padStart(2, '0');
-                let year = match[3];
-
-                // Handle 2-digit years
-                if (year.length === 2) {
-                    year = parseInt(year) > 50 ? `19${year}` : `20${year}`;
-                }
-
-                return `${year}-${month}-${day}`;
-            }
-        }
-        return '';
-    }; */
-
-    // Document AI API call - COMMENTED OUT
-    /* const callDocumentAIApi = async (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const response = await axiosInstance.post('/document-ai/parse-passport', formData);
-
-        return response.data;
-    }; */
-
-    // Extract text from PDF using backend
-    const extractTextFromPDF = async (file) => {
-        try {
-            // Convert file to base64
-            const base64Data = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                    const result = reader.result;
-                    // Remove data URL prefix if present
-                    const base64 = result.includes(',') ? result.split(',')[1] : result;
-                    resolve(base64);
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
-            });
-
-            // Call backend to extract text
-            const response = await axiosInstance.post('/Employee/extract-pdf-text', {
-                pdfData: base64Data
-            });
-
-            return response.data.text;
-        } catch (error) {
-            console.error('Error extracting PDF text:', error);
-            throw new Error(error.response?.data?.message || 'Failed to extract text from PDF');
-        }
-    };
-
-    // Parse passport details from extracted text
-    const parsePassportDetails = (text) => {
-        console.log('🔍 Parsing passport details from text...');
-        console.log('📄 Text length:', text.length);
-        console.log('📄 First 1000 chars:', text.substring(0, 1000));
-
-        const details = {
-            number: '',
-            issueDate: '',
-            countryOfIssue: '',
-            expiryDate: '',
-            nationality: ''
-        };
-
-        // Try multiple patterns for passport number
-        const passportPatterns = [
-            /(?:पासपोर्ट\s*न\.|Passport\s*No\.?)[\s:]*([A-Z]{1,2}\d{6,9})/i,
-            /(?:passport\s*number|passport\s*no|pass\s*no)[\s:]*([A-Z0-9]{6,12})/i,
-            /Passport\s*No[.:]\s*([A-Z]{1,2}\d{6,9})/i,
-            /\b([A-Z]{2}\d{6})\b/, // AF637144 pattern
-            /\b([A-Z]{1,2}\d{6,9})\b/ // Generic pattern
-        ];
-
-        for (let i = 0; i < passportPatterns.length; i++) {
-            const match = text.match(passportPatterns[i]);
-            if (match && match[1] && match[1].length >= 7) {
-                details.number = match[1].trim();
-                console.log(`✅ Found passport number (pattern ${i + 1}):`, details.number);
-                break;
-            }
-        }
-
-        if (!details.number) {
-            // Try to find any alphanumeric code that looks like a passport number
-            const allMatches = text.match(/\b([A-Z]{1,2}\d{6,9})\b/g);
-            if (allMatches) {
-                details.number = allMatches[0];
-                console.log('✅ Using first match:', details.number);
-            }
-        }
-
-        // Format date from text to YYYY-MM-DD format
-        const formatDateFromText = (dateStr) => {
-            const formats = [
-                /(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/, // DD.MM.YYYY or DD/MM/YYYY
-            ];
-
-            for (const format of formats) {
-                const match = dateStr.match(format);
-                if (match) {
-                    let day = match[1].padStart(2, '0');
-                    let month = match[2].padStart(2, '0');
-                    let year = match[3];
-
-                    // Handle 2-digit years
-                    if (year.length === 2) {
-                        year = parseInt(year) > 50 ? `19${year}` : `20${year}`;
-                    }
-
-                    return `${year}-${month}-${day}`;
-                }
-            }
-            return '';
-        };
-
-        // Try multiple patterns for issue date
-        const issueDatePatterns = [
-            /(?:जारी\s*करने\s*की\s*तिथि|Date\s*of\s*Issue)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /(?:date\s*of\s*issue|issued|issue\s*date)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /Date\s*of\s*Issue[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/i,
-            /(\d{1,2}\/\d{1,2}\/\d{4})/g // Find all dates and use the first one
-        ];
-
-        for (let i = 0; i < issueDatePatterns.length; i++) {
-            const match = text.match(issueDatePatterns[i]);
-            if (match) {
-                const dateStr = match[1];
-                const formatted = formatDateFromText(dateStr);
-                if (formatted) {
-                    details.issueDate = formatted;
-                    console.log(`✅ Found issue date (pattern ${i + 1}):`, dateStr, '→', formatted);
-                    break;
-                }
-            }
-        }
-
-        if (!details.issueDate) {
-            // Try to find any date pattern
-            const dateMatches = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/g);
-            if (dateMatches && dateMatches.length > 0) {
-                details.issueDate = formatDateFromText(dateMatches[0]);
-                console.log('✅ Using first date as issue date:', details.issueDate);
-            }
-        }
-
-        // Try multiple patterns for place of issue
-        const placePatterns = [
-            /(?:जारी\s*करने\s*का\s*स्थान|Place\s*of\s*Issue)[\s:]*([A-Z][a-zA-Z\s]{2,30})/i,
-            /(?:place\s*of\s*issue|issued\s*at|issued\s*in)[\s:]*([A-Z][a-zA-Z\s]{2,30})/i,
-            /Place\s*of\s*Issue[:\s]*([A-Z][A-Z\s]{2,20})/i,
-            /(COCHIN|MUMBAI|DELHI|KOLKATA|CHENNAI|BANGALORE|HYDERABAD)/i // Common Indian passport issue places
-        ];
-
-        for (let i = 0; i < placePatterns.length; i++) {
-            const match = text.match(placePatterns[i]);
-            if (match) {
-                details.countryOfIssue = match[1] ? match[1].trim() : match[0].trim();
-                console.log(`✅ Found place of issue (pattern ${i + 1}):`, details.countryOfIssue);
-                break;
-            }
-        }
-
-        // Try multiple patterns for expiry date
-        const expiryDatePatterns = [
-            /(?:समाप्ति\s*की\s*तिथि|Date\s*of\s*Expiry)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /(?:date\s*of\s*expiry|expires|expiry\s*date|valid\s*until)[\s:]*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i,
-            /Date\s*of\s*Expiry[:\s]*(\d{1,2}\/\d{1,2}\/\d{4})/i
-        ];
-
-        for (let i = 0; i < expiryDatePatterns.length; i++) {
-            const match = text.match(expiryDatePatterns[i]);
-            if (match) {
-                const dateStr = match[1];
-                const formatted = formatDateFromText(dateStr);
-                if (formatted) {
-                    details.expiryDate = formatted;
-                    console.log(`✅ Found expiry date (pattern ${i + 1}):`, dateStr, '→', formatted);
-                    break;
-                }
-            }
-        }
-
-        if (!details.expiryDate) {
-            // Try to find the second date (usually expiry comes after issue)
-            const dateMatches = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/g);
-            if (dateMatches && dateMatches.length > 1) {
-                details.expiryDate = formatDateFromText(dateMatches[1]);
-                console.log('✅ Using second date as expiry date:', details.expiryDate);
-            }
-        }
-
-        // Try to find nationality
-        const nationalityPatterns = [
-            /(?:Nationality|नागरिकता)[\s:]*([A-Z][a-zA-Z\s]{2,30})/i,
-            /Nationality[:\s]*([A-Z][A-Z\s]{2,20})/i,
-            /(INDIAN|INDIA|AMERICAN|USA|BRITISH|UK|CANADIAN|CANADA)/i
-        ];
-
-        for (let i = 0; i < nationalityPatterns.length; i++) {
-            const match = text.match(nationalityPatterns[i]);
-            if (match) {
-                details.nationality = match[1] ? match[1].trim() : match[0].trim();
-                console.log(`✅ Found nationality (pattern ${i + 1}):`, details.nationality);
-                break;
-            }
-        }
-
-        console.log('📋 Final extracted details:', details);
-        return details;
-    };
-
-    // Handle passport file upload with PDF extraction
-    const handlePassportFileChange = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        // Set the file first
-        setPassportForm(prev => ({ ...prev, file }));
-
-        // If PDF, extract details automatically
-        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-            try {
-                setExtractingPassport(true);
-                setPassportScanError('');
-
-                console.log('📄 Extracting text from PDF...');
-                const pdfText = await extractTextFromPDF(file);
-
-                console.log('========================================');
-                console.log('📄 RAW TEXT EXTRACTED FROM PDF:');
-                console.log('========================================');
-                console.log(pdfText);
-                console.log('========================================');
-
-                const extractedDetails = parsePassportDetails(pdfText);
-
-                setPassportForm(prev => ({
-                    ...prev,
-                    number: extractedDetails.number || prev.number || '',
-                    nationality: extractedDetails.nationality || prev.nationality || '',
-                    issueDate: extractedDetails.issueDate || prev.issueDate || '',
-                    expiryDate: extractedDetails.expiryDate || prev.expiryDate || '',
-                    countryOfIssue: extractedDetails.countryOfIssue || prev.countryOfIssue || ''
-                }));
-
-                setAlertDialog({
-                    open: true,
-                    title: "Details Extracted",
-                    description: "Passport details have been auto-filled from the PDF. Please verify and update if needed."
-                });
-            } catch (error) {
-                console.error('Error extracting passport details:', error);
-                setPassportScanError(error.message || 'Failed to extract details from PDF');
-                setAlertDialog({
-                    open: true,
-                    title: "Extraction Failed",
-                    description: error.message || "Could not extract details from PDF. Please enter details manually."
-                });
-            } finally {
-                setExtractingPassport(false);
-            }
-        }
-    };
-
-    /* EXTRACTION CODE COMMENTED OUT - File upload works without extraction
-            // If PDF, extract details automatically
-            if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-                try {
-                    setExtractingPassport(true);
-                    setStatusMessage('Uploading document for AI extraction...');
-
-                    const response = await callDocumentAIApi(file);
-                    const extractedDetails = response.data || response;
-
-                    setPassportForm(prev => ({
-                        ...prev,
-                        number: extractedDetails.number || prev.number || '',
-                        nationality: extractedDetails.nationality || prev.nationality || '',
-                        issueDate: extractedDetails.issueDate || prev.issueDate || '',
-                        expiryDate: extractedDetails.expiryDate || prev.expiryDate || '',
-                        countryOfIssue: extractedDetails.placeOfIssue || extractedDetails.countryOfIssue || prev.countryOfIssue || ''
-                    }));
-
-                    setAlertDialog({
-                        open: true,
-                        title: "Details Extracted by AI",
-                        description: "Passport details have been automatically extracted. Please verify before saving."
-                    });
-                    return;
-                } catch (error) {
-                    console.error('Error extracting passport details:', error);
-                    setAlertDialog({
-                        open: true,
-                        title: "Extraction Failed",
-                        description: error.response?.data?.message || error.message || "AI Extraction failed. Trying fallback method."
-                    });
-
-                    // Attempt local text extraction as fallback
-                    try {
-                        setStatusMessage('Falling back to local text extraction...');
-                        console.log('📄 Using text extraction fallback...');
-                        const pdfText = await extractTextFromPDF(file);
-
-                        console.log('========================================');
-                        console.log('📄 RAW TEXT EXTRACTED FROM PDF:');
-                        console.log('========================================');
-                        console.log(pdfText);
-                        console.log('========================================');
-                        console.log('📊 PDF TEXT STATS:');
-                        console.log('Total length:', pdfText.length);
-                        console.log('First 2000 characters:');
-                        console.log(pdfText.substring(0, 2000));
-                        console.log('========================================');
-
-                        const extractedDetails = parsePassportDetails(pdfText);
-
-                        setPassportForm(prev => ({
-                            ...prev,
-                            number: extractedDetails.number || prev.number || '',
-                            nationality: extractedDetails.nationality || prev.nationality || '',
-                            issueDate: extractedDetails.issueDate || prev.issueDate || '',
-                            expiryDate: extractedDetails.expiryDate || prev.expiryDate || '',
-                            countryOfIssue: extractedDetails.countryOfIssue || extractedDetails.placeOfIssue || prev.countryOfIssue || ''
-                        }));
-
-                        setAlertDialog({
-                            open: true,
-                            title: "Details Extracted",
-                            description: "Passport details have been auto-filled from the PDF text. Please verify and update if needed."
-                        });
-                    } catch (fallbackError) {
-                        console.error('Fallback extraction failed:', fallbackError);
-                        setAlertDialog({
-                            open: true,
-                            title: "Extraction Failed",
-                            description: fallbackError.message || "Could not extract details from PDF. Please enter details manually."
-                        });
-
-                        if (fileInputRef.current) {
-                            fileInputRef.current.value = '';
+        } else if (field === 'issueDate') {
+            if (!value || value.trim() === '') {
+                error = 'Issue date is required';
+            } else {
+                const dateValidation = validateDate(value, true);
+                if (!dateValidation.isValid) {
+                    error = dateValidation.error;
+                } else {
+                    const issueDate = new Date(value);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    if (issueDate >= today) {
+                        error = 'Issue date must be a past date';
+                    } else if (passportForm.expiryDate) {
+                        // Re-validate expiry date when issue date changes
+                        const expiryDate = new Date(passportForm.expiryDate);
+                        if (expiryDate <= issueDate) {
+                            errors.expiryDate = 'Expiry date must be later than the issue date';
+                        } else {
+                            // Clear expiry date error if it's now valid
+                            delete errors.expiryDate;
                         }
                     }
-                } finally {
-                    setExtractingPassport(false);
-                    setStatusMessage('');
                 }
             }
-    */
+        } else if (field === 'expiryDate') {
+            if (!value || value.trim() === '') {
+                error = 'Expiry date is required';
+            } else {
+                const dateValidation = validateDate(value, true);
+                if (!dateValidation.isValid) {
+                    error = dateValidation.error;
+                } else {
+                    const expiryDate = new Date(value);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    if (expiryDate <= today) {
+                        error = 'Expiry date must be a future date';
+                    } else if (passportForm.issueDate) {
+                        const issueDate = new Date(passportForm.issueDate);
+                        if (expiryDate <= issueDate) {
+                            error = 'Expiry date must be later than the issue date';
+                        }
+                    }
+                }
+            }
+        } else if (field === 'countryOfIssue') {
+            if (!value || value.trim() === '') {
+                error = 'Country of issue is required';
+            } else {
+                const validCountries = getAllCountryNames();
+                if (!validCountries.includes(value.trim())) {
+                    error = 'Please select a valid country from the list';
+                }
+            }
+        }
+
+        if (error) {
+            errors[field] = error;
+        } else {
+            delete errors[field];
+        }
+        setPassportErrors(errors);
+    };
+
+
+    // Handle passport file upload
+    const handlePassportFileChange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) {
+            setPassportForm(prev => ({ ...prev, file: null }));
+            setPassportErrors(prev => {
+                const updated = { ...prev };
+                updated.file = 'Passport copy is required';
+                return updated;
+            });
+            return;
+        }
+
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+        const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+
+        if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
+            setPassportErrors(prev => ({
+                ...prev,
+                file: 'Only PDF, JPEG, or PNG file formats are allowed'
+            }));
+            // Clear the file input
+            if (e.target) {
+                e.target.value = '';
+            }
+            return;
+        }
+
+        // Clear file error if valid
+        setPassportErrors(prev => {
+            const updated = { ...prev };
+            delete updated.file;
+            return updated;
+        });
+
+        // Set the file
+        setPassportForm(prev => ({ ...prev, file }));
+    };
 
 
 
+
+
+
+    // Get all countries for validation
 
     const validatePassportForm = () => {
         const errors = {};
 
+        // 1. Passport Number - Required, alphanumeric, no special characters
         if (!passportForm.number || passportForm.number.trim() === '') {
             errors.number = 'Passport number is required';
+        } else if (!/^[A-Za-z0-9]+$/.test(passportForm.number.trim())) {
+            errors.number = 'Passport number must be alphanumeric with no special characters';
         }
 
+        // 2. Passport Nationality - Required, must be from valid country list
         if (!passportForm.nationality || passportForm.nationality.trim() === '') {
-            errors.nationality = 'Nationality is required';
+            errors.nationality = 'Passport nationality is required';
+        } else {
+            const validCountries = getAllCountryNames();
+            if (!validCountries.includes(passportForm.nationality.trim())) {
+                errors.nationality = 'Please select a valid country from the list';
+            }
         }
 
+        // 3. Issue Date - Required, valid date, must be past date
         if (!passportForm.issueDate || passportForm.issueDate.trim() === '') {
             errors.issueDate = 'Issue date is required';
+        } else {
+            const dateValidation = validateDate(passportForm.issueDate, true);
+            if (!dateValidation.isValid) {
+                errors.issueDate = dateValidation.error;
+            } else {
+                const issueDate = new Date(passportForm.issueDate);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                if (issueDate >= today) {
+                    errors.issueDate = 'Issue date must be a past date';
+                }
+            }
         }
 
-        if (!passportForm.countryOfIssue || passportForm.countryOfIssue.trim() === '') {
-            errors.countryOfIssue = 'Country of issue is required';
-        }
-
+        // 4. Expiry Date - Required, valid date, must be future date, must be after issue date
         if (!passportForm.expiryDate || passportForm.expiryDate.trim() === '') {
             errors.expiryDate = 'Expiry date is required';
+        } else {
+            const dateValidation = validateDate(passportForm.expiryDate, true);
+            if (!dateValidation.isValid) {
+                errors.expiryDate = dateValidation.error;
+            } else {
+                const expiryDate = new Date(passportForm.expiryDate);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                if (expiryDate <= today) {
+                    errors.expiryDate = 'Expiry date must be a future date';
+                } else if (passportForm.issueDate) {
+                    const issueDate = new Date(passportForm.issueDate);
+                    if (expiryDate <= issueDate) {
+                        errors.expiryDate = 'Expiry date must be later than the issue date';
+                    }
+                }
+            }
         }
 
+        // 5. Country of Issue - Required, must be from valid country list
+        if (!passportForm.countryOfIssue || passportForm.countryOfIssue.trim() === '') {
+            errors.countryOfIssue = 'Country of issue is required';
+        } else {
+            const validCountries = getAllCountryNames();
+            if (!validCountries.includes(passportForm.countryOfIssue.trim())) {
+                errors.countryOfIssue = 'Please select a valid country from the list';
+            }
+        }
+
+        // 6. Passport Copy - Required, only PDF, JPEG, or PNG
         if (!passportForm.file) {
-            errors.file = 'Please upload a passport file';
+            errors.file = 'Passport copy is required';
+        } else {
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+            const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+            const fileExtension = '.' + passportForm.file.name.split('.').pop().toLowerCase();
+
+            if (!allowedTypes.includes(passportForm.file.type) && !allowedExtensions.includes(fileExtension)) {
+                errors.file = 'Only PDF, JPEG, or PNG file formats are allowed';
+            }
         }
 
         setPassportErrors(errors);
@@ -1719,10 +1805,18 @@ export default function EmployeeProfilePage() {
 
     // Open passport modal and populate form with existing data
     const handleOpenPassportModal = () => {
+        // Get nationality from basic details as fallback and convert to full country name
+        const basicNationalityCode = employee?.nationality || employee?.country || '';
+        const basicNationality = basicNationalityCode ? getCountryName(basicNationalityCode) : '';
+
         if (employee?.passportDetails) {
+            // Convert passport nationality to full country name if it's a code
+            const passportNationalityCode = employee.passportDetails.nationality || '';
+            const passportNationality = passportNationalityCode ? getCountryName(passportNationalityCode) : '';
+
             setPassportForm({
                 number: employee.passportDetails.number || '',
-                nationality: employee.passportDetails.nationality || '',
+                nationality: passportNationality || basicNationality,
                 issueDate: employee.passportDetails.issueDate ? employee.passportDetails.issueDate.substring(0, 10) : '',
                 expiryDate: employee.passportDetails.expiryDate ? employee.passportDetails.expiryDate.substring(0, 10) : '',
                 countryOfIssue: employee.passportDetails.placeOfIssue || '',
@@ -1742,7 +1836,7 @@ export default function EmployeeProfilePage() {
         } else {
             setPassportForm({
                 number: '',
-                nationality: '',
+                nationality: basicNationality,
                 issueDate: '',
                 expiryDate: '',
                 countryOfIssue: '',
@@ -1755,7 +1849,7 @@ export default function EmployeeProfilePage() {
 
     // Reset form when modal closes
     const handleClosePassportModal = () => {
-        if (!savingPassport && !extractingPassport) {
+        if (!savingPassport) {
             setShowPassportModal(false);
             setPassportForm({
                 number: '',
@@ -1833,7 +1927,37 @@ export default function EmployeeProfilePage() {
     };
 
     const handleBankChange = (field, value) => {
-        setBankForm(prev => ({ ...prev, [field]: value }));
+        // Apply input restrictions based on field type
+        let sanitizedValue = value;
+
+        switch (field) {
+            case 'bankName':
+            case 'accountName':
+                // Only allow letters and spaces
+                sanitizedValue = value.replace(/[^A-Za-z\s]/g, '');
+                break;
+            case 'accountNumber':
+                // Only allow numbers
+                sanitizedValue = value.replace(/[^0-9]/g, '');
+                break;
+            case 'ibanNumber':
+                // Allow alphanumeric and spaces (will be validated for IBAN format)
+                sanitizedValue = value.replace(/[^A-Za-z0-9\s]/g, '').toUpperCase();
+                break;
+            case 'swiftCode':
+                // Allow alphanumeric (will be validated for SWIFT format)
+                sanitizedValue = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                break;
+            case 'otherDetails':
+                // Free text - no restrictions
+                sanitizedValue = value;
+                break;
+            default:
+                sanitizedValue = value;
+                break;
+        }
+
+        setBankForm(prev => ({ ...prev, [field]: sanitizedValue }));
 
         // Clear error when user starts typing
         setBankFormErrors(prev => ({ ...prev, [field]: '' }));
@@ -1843,23 +1967,23 @@ export default function EmployeeProfilePage() {
 
         switch (field) {
             case 'bankName':
-                validationResult = validateBankName(value, true);
+                validationResult = validateBankName(sanitizedValue, true);
                 break;
             case 'accountName':
-                validationResult = validateAccountName(value, true);
+                validationResult = validateAccountName(sanitizedValue, true);
                 break;
             case 'accountNumber':
-                validationResult = validateAccountNumber(value, true);
+                validationResult = validateAccountNumber(sanitizedValue, true);
                 break;
             case 'ibanNumber':
-                validationResult = validateIBAN(value, true);
+                validationResult = validateIBAN(sanitizedValue, true);
                 break;
             case 'swiftCode':
-                validationResult = validateSWIFT(value, false);
+                validationResult = validateSWIFT(sanitizedValue, false);
                 break;
             case 'otherDetails':
-                if (value && value.trim() !== '') {
-                    validationResult = validateTextLength(value, null, 500, false);
+                if (sanitizedValue && sanitizedValue.trim() !== '') {
+                    validationResult = validateTextLength(sanitizedValue, null, 500, false);
                 }
                 break;
             default:
@@ -1978,35 +2102,76 @@ export default function EmployeeProfilePage() {
     };
 
     // Salary Details Modal Handlers
+    // Month options
+    const monthOptions = [
+        { value: 'January', label: 'January' },
+        { value: 'February', label: 'February' },
+        { value: 'March', label: 'March' },
+        { value: 'April', label: 'April' },
+        { value: 'May', label: 'May' },
+        { value: 'June', label: 'June' },
+        { value: 'July', label: 'July' },
+        { value: 'August', label: 'August' },
+        { value: 'September', label: 'September' },
+        { value: 'October', label: 'October' },
+        { value: 'November', label: 'November' },
+        { value: 'December', label: 'December' }
+    ];
+
+    // Calculate total salary
+    const calculateTotalSalary = (basic, otherAllowance) => {
+        const basicNum = parseFloat(basic) || 0;
+        const otherNum = parseFloat(otherAllowance) || 0;
+        return (basicNum + otherNum).toFixed(2);
+    };
+
+
     const handleOpenSalaryModal = () => {
         if (employee) {
-            const vehicleAllowance = employee.additionalAllowances?.find(a => a.type?.toLowerCase().includes('vehicle'))?.amount || '';
+            // If editing initial salary, try to get month from initial salary entry in history
+            let month = '';
+            if (hasSalaryDetails() && employee.salaryHistory && employee.salaryHistory.length > 0) {
+                const initialEntry = employee.salaryHistory.find(entry => {
+                    const entryBasic = entry.basic || 0;
+                    const entryOther = entry.otherAllowance || 0;
+                    const employeeBasic = employee.basic || 0;
+                    const employeeOther = employee.otherAllowance || 0;
+                    return (entryBasic === employeeBasic && entryOther === employeeOther) || entry.isInitial;
+                });
+                if (initialEntry && initialEntry.month) {
+                    month = initialEntry.month;
+                } else if (employee.dateOfJoining) {
+                    const dateOfJoining = new Date(employee.dateOfJoining);
+                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+                    month = monthNames[dateOfJoining.getMonth()];
+                }
+            }
+
             setSalaryForm({
+                month: month,
                 basic: employee.basic ? String(employee.basic) : '',
-                houseRentAllowance: employee.houseRentAllowance ? String(employee.houseRentAllowance) : '',
                 otherAllowance: employee.otherAllowance ? String(employee.otherAllowance) : '',
-                vehicleAllowance: vehicleAllowance ? String(vehicleAllowance) : '',
-                fromDate: '',
-                toDate: ''
+                totalSalary: calculateTotalSalary(
+                    employee.basic ? String(employee.basic) : '',
+                    employee.otherAllowance ? String(employee.otherAllowance) : ''
+                )
             });
         } else {
+            const today = new Date();
+            const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            const currentMonth = monthNames[today.getMonth()];
             setSalaryForm({
+                month: currentMonth,
                 basic: '',
-                houseRentAllowance: '',
                 otherAllowance: '',
-                vehicleAllowance: '',
-                fromDate: '',
-                toDate: ''
+                totalSalary: '0.00'
             });
         }
         setEditingSalaryIndex(null);
         setSalaryFormErrors({
+            month: '',
             basic: '',
-            houseRentAllowance: '',
-            otherAllowance: '',
-            vehicleAllowance: '',
-            fromDate: '',
-            toDate: ''
+            otherAllowance: ''
         });
         setShowSalaryModal(true);
     };
@@ -2014,48 +2179,60 @@ export default function EmployeeProfilePage() {
     const handleCloseSalaryModal = () => {
         if (!savingSalary) {
             setShowSalaryModal(false);
+            const today = new Date();
+            const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+            const currentMonth = monthNames[today.getMonth()];
             setSalaryForm({
+                month: currentMonth,
                 basic: '',
-                houseRentAllowance: '',
                 otherAllowance: '',
-                vehicleAllowance: ''
+                totalSalary: '0.00'
             });
             setSalaryFormErrors({
+                month: '',
                 basic: '',
-                houseRentAllowance: '',
-                otherAllowance: '',
-                vehicleAllowance: ''
+                otherAllowance: ''
             });
         }
     };
 
     const handleSalaryChange = (field, value) => {
-        // Only allow numbers and decimal point
-        const numericValue = value.replace(/[^0-9.]/g, '');
-        // Prevent multiple decimal points
-        const parts = numericValue.split('.');
-        const sanitizedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue;
+        let updatedForm = { ...salaryForm };
 
-        setSalaryForm(prev => ({ ...prev, [field]: sanitizedValue }));
+        if (field === 'month') {
+            updatedForm.month = value;
+            setSalaryFormErrors(prev => ({ ...prev, month: '' }));
+        } else if (field === 'basic' || field === 'otherAllowance') {
+            // Only allow numbers and decimal point
+            const numericValue = value.replace(/[^0-9.]/g, '');
+            // Prevent multiple decimal points
+            const parts = numericValue.split('.');
+            const sanitizedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue;
+            updatedForm[field] = sanitizedValue;
 
-        // Clear error when user starts typing
-        setSalaryFormErrors(prev => ({ ...prev, [field]: '' }));
-
-        // Validate field on change
-        let validationResult = { isValid: true, error: '' };
-
-        if (sanitizedValue && sanitizedValue.trim() !== '') {
-            const numValue = parseFloat(sanitizedValue);
-            if (isNaN(numValue) || numValue < 0) {
-                validationResult = { isValid: false, error: 'Please enter a valid positive number' };
-            } else if (numValue > 10000000) {
-                validationResult = { isValid: false, error: 'Amount cannot exceed 10,000,000' };
+            // Validate numeric field
+            if (sanitizedValue && sanitizedValue.trim() !== '') {
+                const numValue = parseFloat(sanitizedValue);
+                if (isNaN(numValue) || numValue < 0) {
+                    setSalaryFormErrors(prev => ({ ...prev, [field]: 'Please enter a valid positive number' }));
+                } else if (numValue > 10000000) {
+                    setSalaryFormErrors(prev => ({ ...prev, [field]: 'Amount cannot exceed 10,000,000' }));
+                } else {
+                    setSalaryFormErrors(prev => ({ ...prev, [field]: '' }));
+                }
+            } else {
+                setSalaryFormErrors(prev => ({ ...prev, [field]: '' }));
             }
+
+            // Auto-calculate total salary
+            const total = calculateTotalSalary(
+                field === 'basic' ? sanitizedValue : updatedForm.basic,
+                field === 'otherAllowance' ? sanitizedValue : updatedForm.otherAllowance
+            );
+            updatedForm.totalSalary = total;
         }
 
-        if (!validationResult.isValid) {
-            setSalaryFormErrors(prev => ({ ...prev, [field]: validationResult.error }));
-        }
+        setSalaryForm(updatedForm);
     };
 
     const handleSaveSalary = async () => {
@@ -2063,31 +2240,25 @@ export default function EmployeeProfilePage() {
 
         // Validate all fields
         const errors = {
-            basic: '',
-            houseRentAllowance: '',
-            otherAllowance: '',
-            vehicleAllowance: '',
+            month: '',
             fromDate: '',
-            toDate: ''
+            toDate: '',
+            basic: '',
+            otherAllowance: ''
         };
 
         let hasErrors = false;
 
-        // Validate From Date
-        if (!salaryForm.fromDate || salaryForm.fromDate.trim() === '') {
-            errors.fromDate = 'From date is required';
+        // Validate Month
+        if (!salaryForm.month || salaryForm.month.trim() === '') {
+            errors.month = 'Month is required';
+            hasErrors = true;
+        } else if (!monthOptions.find(opt => opt.value === salaryForm.month)) {
+            errors.month = 'Please select a valid month';
             hasErrors = true;
         }
 
-        // Validate To Date (optional but must be after fromDate if provided)
-        if (salaryForm.toDate && salaryForm.toDate.trim() !== '') {
-            const fromDate = new Date(salaryForm.fromDate);
-            const toDate = new Date(salaryForm.toDate);
-            if (toDate < fromDate) {
-                errors.toDate = 'To date must be after from date';
-                hasErrors = true;
-            }
-        }
+        // Dates are automatically set, no validation needed
 
         // Helper function to safely get string value
         const getStringValue = (value) => {
@@ -2111,19 +2282,6 @@ export default function EmployeeProfilePage() {
             }
         }
 
-        // Validate House Rent Allowance (optional but must be valid if provided)
-        const hraStr = getStringValue(salaryForm.houseRentAllowance);
-        if (hraStr && hraStr.trim() !== '') {
-            const hraValue = parseFloat(hraStr);
-            if (isNaN(hraValue) || hraValue < 0) {
-                errors.houseRentAllowance = 'Please enter a valid positive number';
-                hasErrors = true;
-            } else if (hraValue > 10000000) {
-                errors.houseRentAllowance = 'Amount cannot exceed 10,000,000';
-                hasErrors = true;
-            }
-        }
-
         // Validate Other Allowance (optional but must be valid if provided)
         const otherStr = getStringValue(salaryForm.otherAllowance);
         if (otherStr && otherStr.trim() !== '') {
@@ -2133,19 +2291,6 @@ export default function EmployeeProfilePage() {
                 hasErrors = true;
             } else if (otherValue > 10000000) {
                 errors.otherAllowance = 'Amount cannot exceed 10,000,000';
-                hasErrors = true;
-            }
-        }
-
-        // Validate Vehicle Allowance (optional but must be valid if provided)
-        const vehicleStr = getStringValue(salaryForm.vehicleAllowance);
-        if (vehicleStr && vehicleStr.trim() !== '') {
-            const vehicleValue = parseFloat(vehicleStr);
-            if (isNaN(vehicleValue) || vehicleValue < 0) {
-                errors.vehicleAllowance = 'Please enter a valid positive number';
-                hasErrors = true;
-            } else if (vehicleValue > 10000000) {
-                errors.vehicleAllowance = 'Amount cannot exceed 10,000,000';
                 hasErrors = true;
             }
         }
@@ -2160,43 +2305,18 @@ export default function EmployeeProfilePage() {
         try {
             setSavingSalary(true);
 
-            // Prepare additional allowances array
-            const additionalAllowances = [];
-            const vehicleStr = getStringValue(salaryForm.vehicleAllowance);
-            const vehicleAmount = vehicleStr && vehicleStr.trim() !== '' ? parseFloat(vehicleStr) : 0;
-            if (vehicleAmount > 0) {
-                additionalAllowances.push({
-                    type: 'Vehicle Allowance',
-                    amount: vehicleAmount
-                });
-            }
-            // Preserve other additional allowances that are not vehicle
-            if (employee?.additionalAllowances) {
-                employee.additionalAllowances.forEach(allowance => {
-                    if (!allowance.type?.toLowerCase().includes('vehicle')) {
-                        additionalAllowances.push(allowance);
-                    }
-                });
-            }
-
             const basicStr = getStringValue(salaryForm.basic);
-            const hraStr = getStringValue(salaryForm.houseRentAllowance);
             const otherStr = getStringValue(salaryForm.otherAllowance);
 
             const basic = parseFloat(basicStr);
-            const houseRentAllowance = hraStr && hraStr.trim() !== '' ? parseFloat(hraStr) : 0;
             const otherAllowance = otherStr && otherStr.trim() !== '' ? parseFloat(otherStr) : 0;
-
-            // Calculate total salary
-            const additionalTotal = additionalAllowances.reduce((sum, item) => sum + (item.amount || 0), 0);
-            const totalSalary = basic + houseRentAllowance + otherAllowance + additionalTotal;
+            const totalSalary = parseFloat(salaryForm.totalSalary) || (basic + otherAllowance);
 
             // Prepare salary history
             const salaryHistory = employee?.salaryHistory ? [...employee.salaryHistory] : [];
-            const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
             if (editingSalaryIndex !== null) {
-                // Editing existing record
+                // Editing existing record from history - keep original dates
                 const sortedHistory = [...salaryHistory].sort((a, b) => {
                     const dateA = new Date(a.fromDate);
                     const dateB = new Date(b.fromDate);
@@ -2204,67 +2324,103 @@ export default function EmployeeProfilePage() {
                 });
 
                 const entryToEdit = sortedHistory[editingSalaryIndex];
-                const fromDate = salaryForm.fromDate ? new Date(salaryForm.fromDate) : new Date(entryToEdit.fromDate);
-                const toDate = salaryForm.toDate ? new Date(salaryForm.toDate) : (entryToEdit.toDate ? new Date(entryToEdit.toDate) : null);
-                const month = monthNames[fromDate.getMonth()];
 
-                // Update the entry
+                // Update the entry - keep original dates, only update salary amounts
                 const updatedEntry = {
                     ...entryToEdit,
-                    month: month,
-                    fromDate: fromDate,
-                    toDate: toDate,
+                    month: salaryForm.month || entryToEdit.month,
                     basic: basic,
-                    houseRentAllowance: houseRentAllowance,
                     otherAllowance: otherAllowance,
-                    vehicleAllowance: vehicleAmount,
                     totalSalary: totalSalary
                 };
 
                 // Find and replace in original array
                 const originalIndex = salaryHistory.findIndex(e =>
-                    e.fromDate === entryToEdit.fromDate &&
-                    e.basic === entryToEdit.basic
+                    e._id === entryToEdit._id ||
+                    (e.fromDate === entryToEdit.fromDate && e.basic === entryToEdit.basic)
                 );
                 if (originalIndex !== -1) {
                     salaryHistory[originalIndex] = updatedEntry;
                 }
             } else {
-                // Adding new record
-                const currentDate = new Date();
-                const fromDate = salaryForm.fromDate ? new Date(salaryForm.fromDate) : currentDate;
-                const toDate = salaryForm.toDate ? new Date(salaryForm.toDate) : null;
-                const month = monthNames[fromDate.getMonth()];
+                // Adding new record or editing initial salary through "Edit Salary Details"
+                const today = new Date();
+                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-                // Update the previous entry's toDate if it exists and doesn't have a toDate
-                if (salaryHistory.length > 0 && !toDate) {
-                    const currentActiveEntry = salaryHistory.find(entry => !entry.toDate);
-                    if (currentActiveEntry) {
-                        currentActiveEntry.toDate = fromDate;
+                // Check if this is editing the initial salary (when employee has basic/otherAllowance)
+                const isEditingInitialSalary = hasSalaryDetails();
+
+                if (isEditingInitialSalary) {
+                    // Editing initial salary - preserve history by closing old entry and creating new one
+                    const dateOfJoining = employee.dateOfJoining ? new Date(employee.dateOfJoining) : (employee.createdAt ? new Date(employee.createdAt) : today);
+                    const firstDayOfMonth = new Date(dateOfJoining.getFullYear(), dateOfJoining.getMonth(), 1);
+                    const month = monthNames[dateOfJoining.getMonth()];
+
+                    // Find existing initial salary entry (one that matches the old basic/otherAllowance or has isInitial flag)
+                    const oldBasic = employee.basic || 0;
+                    const oldOther = employee.otherAllowance || 0;
+                    const oldTotal = oldBasic + oldOther;
+
+                    const initialEntryIndex = salaryHistory.findIndex(entry => {
+                        const entryBasic = entry.basic || 0;
+                        const entryOther = entry.otherAllowance || 0;
+                        const entryTotal = entryBasic + entryOther;
+                        // Match by current values or isInitial flag, but only if it doesn't have a toDate (is still active)
+                        return ((entryBasic === oldBasic && entryOther === oldOther && entryTotal === oldTotal) || entry.isInitial) && !entry.toDate;
+                    });
+
+                    if (initialEntryIndex !== -1) {
+                        // Close the old initial salary entry by setting its toDate
+                        const oldEntry = salaryHistory[initialEntryIndex];
+                        salaryHistory[initialEntryIndex] = {
+                            ...oldEntry,
+                            toDate: today // Close the old entry
+                        };
                     }
+
+                    // Create new initial salary entry with updated values
+                    const newInitialSalaryEntry = {
+                        month: salaryForm.month || month,
+                        fromDate: today, // New entry starts from today
+                        toDate: null, // Active until next change
+                        basic: basic,
+                        otherAllowance: otherAllowance,
+                        totalSalary: totalSalary,
+                        createdAt: today,
+                        isInitial: true
+                    };
+                    salaryHistory.push(newInitialSalaryEntry); // Add new entry
+                } else {
+                    // Adding new salary record (not initial)
+                    const fromDate = today;
+                    const month = salaryForm.month || monthNames[today.getMonth()];
+
+                    // Update the previous entry's toDate to the new entry's fromDate
+                    if (salaryHistory.length > 0) {
+                        const currentActiveEntry = salaryHistory.find(entry => !entry.toDate);
+                        if (currentActiveEntry) {
+                            currentActiveEntry.toDate = fromDate;
+                        }
+                    }
+
+                    // Create new salary history entry
+                    const newHistoryEntry = {
+                        month: month,
+                        fromDate: fromDate,
+                        toDate: null, // Will be set when next salary is added
+                        basic: basic,
+                        otherAllowance: otherAllowance,
+                        totalSalary: totalSalary,
+                        createdAt: today
+                    };
+
+                    salaryHistory.push(newHistoryEntry);
                 }
-
-                // Create new salary history entry
-                const newHistoryEntry = {
-                    month: month,
-                    fromDate: fromDate,
-                    toDate: toDate,
-                    basic: basic,
-                    houseRentAllowance: houseRentAllowance,
-                    otherAllowance: otherAllowance,
-                    vehicleAllowance: vehicleAmount,
-                    totalSalary: totalSalary,
-                    createdAt: currentDate
-                };
-
-                salaryHistory.push(newHistoryEntry);
             }
 
             const payload = {
                 basic: basic,
-                houseRentAllowance: houseRentAllowance,
                 otherAllowance: otherAllowance,
-                additionalAllowances: additionalAllowances,
                 salaryHistory: salaryHistory
             };
 
@@ -2273,12 +2429,11 @@ export default function EmployeeProfilePage() {
             setShowSalaryModal(false);
             setEditingSalaryIndex(null);
             setSalaryFormErrors({
-                basic: '',
-                houseRentAllowance: '',
-                otherAllowance: '',
-                vehicleAllowance: '',
+                month: '',
                 fromDate: '',
-                toDate: ''
+                toDate: '',
+                basic: '',
+                otherAllowance: ''
             });
             setAlertDialog({
                 open: true,
@@ -2317,13 +2472,23 @@ export default function EmployeeProfilePage() {
         (employee?.currentPostalCode && employee.currentPostalCode.trim() !== '')
     );
 
-    const hasContactDetails =
-        (Array.isArray(employee?.emergencyContacts) && employee.emergencyContacts.length > 0) ||
-        !!(
-            (employee?.emergencyContactName && employee.emergencyContactName.trim() !== '') ||
-            (employee?.emergencyContactRelation && employee.emergencyContactRelation.trim() !== '') ||
-            (employee?.emergencyContactNumber && employee.emergencyContactNumber.trim() !== '')
-        );
+    // Check if there are valid emergency contacts (must have both name and number)
+    const hasContactDetails = (() => {
+        // Check array of contacts
+        if (Array.isArray(employee?.emergencyContacts) && employee.emergencyContacts.length > 0) {
+            // Verify at least one contact has both name and number
+            return employee.emergencyContacts.some(contact =>
+                contact?.name?.trim() && contact?.number?.trim()
+            );
+        }
+
+        // Check legacy fields - must have both name and number
+        if (employee?.emergencyContactName?.trim() && employee?.emergencyContactNumber?.trim()) {
+            return true;
+        }
+
+        return false;
+    })();
     const reportingAuthorityValueForDisplay = employee?.reportingAuthority
         ? (reportingAuthorityDisplayName || (reportingAuthorityLoading ? 'Loading...' : '—'))
         : null;
@@ -2376,6 +2541,7 @@ export default function EmployeeProfilePage() {
                 postalCode: employee?.currentPostalCode || ''
             });
         }
+        setAddressFormErrors({});
         setShowAddressModal(true);
     };
 
@@ -2390,10 +2556,54 @@ export default function EmployeeProfilePage() {
             country: '',
             postalCode: ''
         });
+        setAddressFormErrors({});
     };
 
     const handleAddressChange = (field, value) => {
-        setAddressForm(prev => ({ ...prev, [field]: value }));
+        let processedValue = value;
+
+        // Input restrictions
+        if (field === 'city' || field === 'state') {
+            processedValue = value.replace(/[^A-Za-z\s]/g, '');
+        }
+
+        setAddressForm(prev => ({ ...prev, [field]: processedValue }));
+
+        // Real-time validation
+        let error = '';
+        if (field === 'line1') {
+            const requiredCheck = validateRequired(processedValue, 'Address Line 1');
+            error = requiredCheck.isValid ? '' : requiredCheck.error;
+        } else if (field === 'city') {
+            if (!processedValue || processedValue.trim() === '') {
+                error = 'City is required';
+            } else if (!/^[A-Za-z\s]+$/.test(processedValue.trim())) {
+                error = 'City must contain letters and spaces only';
+            }
+        } else if (field === 'state') {
+            if (!processedValue || processedValue.trim() === '') {
+                error = `${addressModalType === 'permanent' ? 'State' : 'Emirate'} is required`;
+            } else if (!/^[A-Za-z\s]+$/.test(processedValue.trim())) {
+                error = `${addressModalType === 'permanent' ? 'State' : 'Emirate'} must contain letters and spaces only`;
+            }
+        } else if (field === 'country') {
+            const requiredCheck = validateRequired(processedValue, 'Country');
+            error = requiredCheck.isValid ? '' : requiredCheck.error;
+        } else if (field === 'postalCode') {
+            if (processedValue && !/^[A-Za-z0-9\s-]+$/.test(processedValue.trim())) {
+                error = 'Postal Code can only include letters, numbers, spaces, and hyphens';
+            }
+        }
+
+        setAddressFormErrors(prev => {
+            const updated = { ...prev };
+            if (error) {
+                updated[field] = error;
+            } else {
+                delete updated[field];
+            }
+            return updated;
+        });
     };
 
     const handleSavePersonalDetails = async () => {
@@ -2401,21 +2611,81 @@ export default function EmployeeProfilePage() {
         try {
             setSavingPersonal(true);
 
-            // Validate contact number before saving
-            const countryCode = extractCountryCode(personalForm.contactNumber) || selectedCountryCode;
-            const phoneValidation = validatePhoneNumber(personalForm.contactNumber, countryCode, true);
+            const errors = {};
+
+            // 1. Email (required, valid format)
+            const emailValidation = validateEmail(personalForm.email, true);
+            if (!emailValidation.isValid) {
+                errors.email = emailValidation.error;
+            }
+
+            // 2. Contact Number (required, valid international format)
+            const contactDigits = (personalForm.contactNumber || '').replace(/\D/g, '');
+            const countryCode = extractCountryCode(contactDigits) || selectedCountryCode;
+            const phoneValidation = validatePhoneNumber(contactDigits, countryCode, true);
             if (!phoneValidation.isValid) {
-                setPersonalFormErrors(prev => ({
-                    ...prev,
-                    contactNumber: phoneValidation.error
-                }));
+                errors.contactNumber = phoneValidation.error;
+            }
+
+            // 3. Date of Birth (required, valid date)
+            const dobValidation = validateDate(personalForm.dateOfBirth, true);
+            if (!dobValidation.isValid) {
+                errors.dateOfBirth = dobValidation.error;
+            }
+
+            // 4. Marital Status (required, must be from predefined options)
+            const validMaritalStatuses = ['single', 'married', 'divorced', 'widowed'];
+            if (!personalForm.maritalStatus || personalForm.maritalStatus.trim() === '') {
+                errors.maritalStatus = 'Marital Status is required';
+            } else if (!validMaritalStatuses.includes(personalForm.maritalStatus.toLowerCase())) {
+                errors.maritalStatus = 'Please select a valid marital status option';
+            }
+
+            // 5. Father's Name (required, letters only)
+            if (!personalForm.fathersName || personalForm.fathersName.trim() === '') {
+                errors.fathersName = 'Father\'s Name is required';
+            } else {
+                const trimmedName = personalForm.fathersName.trim();
+                if (trimmedName.length < 2) {
+                    errors.fathersName = 'Father\'s Name must be at least 2 characters';
+                } else if (!/^[A-Za-z\s]+$/.test(trimmedName)) {
+                    errors.fathersName = 'Father\'s Name must contain only letters and spaces';
+                }
+            }
+
+            // 6. Gender (required, must be from predefined options)
+            if (!personalForm.gender || personalForm.gender.trim() === '') {
+                errors.gender = 'Gender is required';
+            } else {
+                const validGenders = ['male', 'female', 'other'];
+                if (!validGenders.includes(personalForm.gender.toLowerCase())) {
+                    errors.gender = 'Please select a valid gender option';
+                }
+            }
+
+            // 7. Nationality (required)
+            if (!personalForm.nationality || personalForm.nationality.trim() === '') {
+                errors.nationality = 'Nationality is required';
+            } else {
+                const trimmedNationality = personalForm.nationality.trim();
+                if (trimmedNationality.length < 2) {
+                    errors.nationality = 'Nationality must be at least 2 characters';
+                } else if (!/^[A-Za-z\s\'-]+$/.test(trimmedNationality)) {
+                    errors.nationality = 'Nationality must contain only letters, spaces, hyphens, and apostrophes';
+                }
+            }
+
+            if (Object.keys(errors).length > 0) {
+                setPersonalFormErrors(errors);
                 setSavingPersonal(false);
                 return;
             }
 
+            setPersonalFormErrors({});
+
             const payload = {
                 email: personalForm.email,
-                contactNumber: formatPhoneForSave(personalForm.contactNumber),
+                contactNumber: formatPhoneForSave(contactDigits),
                 dateOfBirth: personalForm.dateOfBirth || null,
                 maritalStatus: personalForm.maritalStatus,
                 fathersName: personalForm.fathersName,
@@ -2446,6 +2716,39 @@ export default function EmployeeProfilePage() {
         if (!employeeId) return;
         try {
             setSavingAddress(true);
+
+            const errors = {};
+
+            // Shared validations
+            if (!addressForm.line1 || addressForm.line1.trim() === '') {
+                errors.line1 = 'Address Line 1 is required';
+            }
+            if (!addressForm.city || addressForm.city.trim() === '') {
+                errors.city = 'City is required';
+            } else if (!/^[A-Za-z\s]+$/.test(addressForm.city.trim())) {
+                errors.city = 'City must contain letters and spaces only';
+            }
+            const stateLabel = addressModalType === 'permanent' ? 'State' : 'Emirate';
+            if (!addressForm.state || addressForm.state.trim() === '') {
+                errors.state = `${stateLabel} is required`;
+            } else if (!/^[A-Za-z\s]+$/.test(addressForm.state.trim())) {
+                errors.state = `${stateLabel} must contain letters and spaces only`;
+            }
+            if (!addressForm.country || addressForm.country.trim() === '') {
+                errors.country = 'Country is required';
+            }
+            if (addressForm.postalCode && !/^[A-Za-z0-9\s-]+$/.test(addressForm.postalCode.trim())) {
+                errors.postalCode = 'Postal Code can only include letters, numbers, spaces, and hyphens';
+            }
+
+            if (Object.keys(errors).length > 0) {
+                setAddressFormErrors(errors);
+                setSavingAddress(false);
+                return;
+            }
+
+            setAddressFormErrors({});
+
             const payload = addressModalType === 'permanent'
                 ? {
                     addressLine1: addressForm.line1,
@@ -2549,20 +2852,43 @@ export default function EmployeeProfilePage() {
         try {
             setSavingContact(true);
 
-            // Validate contact number before saving
+            const errors = {};
+
             const activeContact = contactForms[0];
-            if (activeContact && activeContact.number) {
+            const relationOptions = ['Self', 'Father', 'Mother', 'Spouse', 'Friend', 'Other'];
+
+            // Name
+            if (!activeContact?.name || activeContact.name.trim() === '') {
+                errors['0_name'] = 'Contact Name is required';
+            } else if (!/^[A-Za-z\s]+$/.test(activeContact.name.trim())) {
+                errors['0_name'] = 'Contact Name must contain letters and spaces only';
+            }
+
+            // Relation
+            if (!activeContact?.relation || activeContact.relation.trim() === '') {
+                errors['0_relation'] = 'Relation is required';
+            } else if (!relationOptions.includes(activeContact.relation)) {
+                errors['0_relation'] = 'Please select a valid relation';
+            }
+
+            // Phone
+            if (!activeContact?.number || activeContact.number.trim() === '') {
+                errors['0_number'] = 'Phone number is required';
+            } else {
                 const countryCode = extractCountryCode(activeContact.number) || contactCountryCode;
                 const phoneValidation = validatePhoneNumber(activeContact.number, countryCode, true);
                 if (!phoneValidation.isValid) {
-                    setContactFormErrors(prev => ({
-                        ...prev,
-                        '0_number': phoneValidation.error
-                    }));
-                    setSavingContact(false);
-                    return;
+                    errors['0_number'] = phoneValidation.error;
                 }
             }
+
+            if (Object.keys(errors).length > 0) {
+                setContactFormErrors(errors);
+                setSavingContact(false);
+                return;
+            }
+
+            setContactFormErrors({});
 
             const filteredContacts = contactForms
                 .map(sanitizeContact)
@@ -2694,8 +3020,64 @@ export default function EmployeeProfilePage() {
         }
     };
 
+    // Check if employee nationality is UAE (handles both code and full name)
+    const isUAENationality = () => {
+        if (!employee) return false;
+
+        // Check both nationality and country fields
+        const nationalityValue = (employee.nationality || employee.country || '').toString().trim();
+        if (!nationalityValue) return false;
+
+        // Normalize: remove extra spaces, convert to lowercase
+        const normalized = nationalityValue.toLowerCase().replace(/\s+/g, ' ').trim();
+
+        // Direct matches
+        if (normalized === 'uae' ||
+            normalized === 'ae' ||
+            normalized === 'united arab emirates' ||
+            normalized === 'united arab emirate' ||
+            normalized === 'unitedarabemirates' ||
+            normalized === 'unitedarabemirate') {
+            return true;
+        }
+
+        // Check if it's a country code that converts to UAE
+        try {
+            // Try uppercase for country code lookup
+            const countryCode = normalized.toUpperCase();
+            if (countryCode.length === 2) {
+                const countryName = getCountryName(countryCode);
+                if (countryName) {
+                    const normalizedCountryName = countryName.toLowerCase().replace(/\s+/g, ' ').trim();
+                    if (normalizedCountryName === 'united arab emirates' ||
+                        normalizedCountryName === 'united arab emirate' ||
+                        normalizedCountryName === 'unitedarabemirates' ||
+                        normalizedCountryName === 'unitedarabemirate') {
+                        return true;
+                    }
+                }
+            }
+
+            // Also try the original value as uppercase
+            const countryNameFromValue = getCountryName(nationalityValue.toUpperCase());
+            if (countryNameFromValue && countryNameFromValue !== nationalityValue) {
+                const normalizedCountryName = countryNameFromValue.toLowerCase().replace(/\s+/g, ' ').trim();
+                if (normalizedCountryName === 'united arab emirates' ||
+                    normalizedCountryName === 'united arab emirate' ||
+                    normalizedCountryName === 'unitedarabemirates' ||
+                    normalizedCountryName === 'unitedarabemirate') {
+                    return true;
+                }
+            }
+        } catch (e) {
+            // If getCountryName fails, continue
+        }
+
+        return false;
+    };
+
     const handleVisaButtonClick = () => {
-        if (!isVisaRequirementApplicable) {
+        if (isUAENationality()) {
             setAlertDialog({
                 open: true,
                 title: "Visa Not Required",
@@ -2708,7 +3090,7 @@ export default function EmployeeProfilePage() {
 
     // Open visa modal and populate with existing data
     const handleOpenVisaModal = (visaType) => {
-        if (!isVisaRequirementApplicable) {
+        if (isUAENationality()) {
             setAlertDialog({
                 open: true,
                 title: "Visa Not Required",
@@ -2725,10 +3107,36 @@ export default function EmployeeProfilePage() {
             // Populate visa form with existing data if available
             if (employee?.visaDetails?.[visaType]) {
                 const details = employee.visaDetails[visaType];
+
+                // Format dates to yyyy-MM-dd format
+                let formattedIssueDate = '';
+                if (details.issueDate) {
+                    const issueDate = new Date(details.issueDate);
+                    if (!isNaN(issueDate.getTime())) {
+                        formattedIssueDate = issueDate.toISOString().split('T')[0];
+                    } else {
+                        formattedIssueDate = details.issueDate.includes('T')
+                            ? details.issueDate.split('T')[0]
+                            : details.issueDate.substring(0, 10);
+                    }
+                }
+
+                let formattedExpiryDate = '';
+                if (details.expiryDate) {
+                    const expiryDate = new Date(details.expiryDate);
+                    if (!isNaN(expiryDate.getTime())) {
+                        formattedExpiryDate = expiryDate.toISOString().split('T')[0];
+                    } else {
+                        formattedExpiryDate = details.expiryDate.includes('T')
+                            ? details.expiryDate.split('T')[0]
+                            : details.expiryDate.substring(0, 10);
+                    }
+                }
+
                 const formData = {
                     number: details.number || '',
-                    issueDate: details.issueDate ? details.issueDate.substring(0, 10) : '',
-                    expiryDate: details.expiryDate ? details.expiryDate.substring(0, 10) : '',
+                    issueDate: formattedIssueDate,
+                    expiryDate: formattedExpiryDate,
                     sponsor: details.sponsor || '',
                     file: null,
                     fileBase64: details.document?.data || '',
@@ -2779,7 +3187,7 @@ export default function EmployeeProfilePage() {
     };
 
     const handleVisaDropdownChange = (value) => {
-        if (!isVisaRequirementApplicable) {
+        if (isUAENationality()) {
             setSelectedVisaType('');
             setShowVisaDropdown(false);
             return;
@@ -2834,19 +3242,118 @@ export default function EmployeeProfilePage() {
     };
 
     const handleVisaFieldChange = (type, field, value) => {
+        // Apply input restrictions
+        let processedValue = value;
+
+        // Visa number: only alphanumeric, no special characters
+        if (field === 'number') {
+            processedValue = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        }
+
+        // Sponsor: letters, numbers, and spaces only
+        if (field === 'sponsor') {
+            processedValue = value.replace(/[^A-Za-z0-9\s]/g, '');
+        }
+
         setVisaForms(prev => ({
             ...prev,
             [type]: {
                 ...prev[type],
-                [field]: value
+                [field]: processedValue
             }
         }));
+
+        // Clear error for this field when user starts typing
         if (visaErrors[type]?.[field]) {
             setVisaErrors(prev => ({
                 ...prev,
                 [type]: { ...prev[type], [field]: '' }
             }));
         }
+
+        // Real-time validation
+        validateVisaField(type, field, processedValue);
+    };
+
+    // Validate individual visa field
+    const validateVisaField = (type, field, value) => {
+        const errors = { ...(visaErrors[type] || {}) };
+        let error = '';
+
+        if (field === 'number') {
+            if (!value || value.trim() === '') {
+                error = 'Visa number is required';
+            } else if (!/^[A-Za-z0-9]+$/.test(value)) {
+                error = 'Visa number must be alphanumeric with no special characters';
+            }
+        } else if (field === 'issueDate') {
+            if (!value || value.trim() === '') {
+                error = 'Issue date is required';
+            } else {
+                const dateValidation = validateDate(value, true);
+                if (!dateValidation.isValid) {
+                    error = dateValidation.error;
+                } else {
+                    const issueDate = new Date(value);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    if (issueDate >= today) {
+                        error = 'Issue date must be a past date';
+                    } else if (visaForms[type].expiryDate) {
+                        // Re-validate expiry date when issue date changes
+                        const expiryDate = new Date(visaForms[type].expiryDate);
+                        if (expiryDate <= issueDate) {
+                            errors.expiryDate = 'Expiry date must be later than the issue date';
+                        } else {
+                            delete errors.expiryDate;
+                        }
+                    }
+                }
+            }
+        } else if (field === 'expiryDate') {
+            if (!value || value.trim() === '') {
+                error = 'Expiry date is required';
+            } else {
+                const dateValidation = validateDate(value, true);
+                if (!dateValidation.isValid) {
+                    error = dateValidation.error;
+                } else {
+                    const expiryDate = new Date(value);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    if (expiryDate <= today) {
+                        error = 'Expiry date must be a future date';
+                    } else if (visaForms[type].issueDate) {
+                        const issueDate = new Date(visaForms[type].issueDate);
+                        if (expiryDate <= issueDate) {
+                            error = 'Expiry date must be later than the issue date';
+                        }
+                    }
+                }
+            }
+        } else if (field === 'sponsor') {
+            if (!value || value.trim() === '') {
+                error = 'Sponsor is required';
+            } else {
+                const trimmedSponsor = value.trim();
+                if (trimmedSponsor.length < 2) {
+                    error = 'Sponsor must be at least 2 characters';
+                } else if (!/^[A-Za-z0-9\s]+$/.test(trimmedSponsor)) {
+                    error = 'Sponsor must contain only letters, numbers, and spaces';
+                }
+            }
+        }
+
+        if (error) {
+            errors[field] = error;
+        } else {
+            delete errors[field];
+        }
+
+        setVisaErrors(prev => ({
+            ...prev,
+            [type]: errors
+        }));
     };
 
     const handleVisaFileChange = (type, file) => {
@@ -2861,8 +3368,31 @@ export default function EmployeeProfilePage() {
                     fileMime: ''
                 }
             }));
+            setVisaErrors(prev => ({
+                ...prev,
+                [type]: { ...(prev[type] || {}), file: 'Visa copy is required' }
+            }));
             return;
         }
+
+        // Validate file type
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+        const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+
+        if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
+            setVisaErrors(prev => ({
+                ...prev,
+                [type]: { ...(prev[type] || {}), file: 'Only PDF, JPEG, or PNG file formats are allowed' }
+            }));
+            return;
+        }
+
+        // Clear file error if valid
+        setVisaErrors(prev => ({
+            ...prev,
+            [type]: { ...(prev[type] || {}), file: '' }
+        }));
 
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -2882,20 +3412,87 @@ export default function EmployeeProfilePage() {
 
     const validateVisaForm = (type) => {
         const currentForm = visaForms[type];
-        const requiredFields = ['number', 'issueDate', 'expiryDate'];
-        if (type === 'employment' || type === 'spouse') {
-            requiredFields.push('sponsor');
+        const errors = {};
+
+        // 1. Visa Number - Required, alphanumeric, no special characters
+        if (!currentForm.number || currentForm.number.trim() === '') {
+            errors.number = 'Visa number is required';
+        } else if (!/^[A-Za-z0-9]+$/.test(currentForm.number.trim())) {
+            errors.number = 'Visa number must be alphanumeric with no special characters';
         }
 
-        const errors = {};
-        requiredFields.forEach((field) => {
-            const value = currentForm[field];
-            if (!value || (typeof value === 'string' && value.trim() === '')) {
-                errors[field] = 'This field is required';
+        // 2. Issue Date - Required, valid date, must be past date
+        if (!currentForm.issueDate || currentForm.issueDate.trim() === '') {
+            errors.issueDate = 'Issue date is required';
+        } else {
+            const dateValidation = validateDate(currentForm.issueDate, true);
+            if (!dateValidation.isValid) {
+                errors.issueDate = dateValidation.error;
+            } else {
+                const issueDate = new Date(currentForm.issueDate);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                if (issueDate >= today) {
+                    errors.issueDate = 'Issue date must be a past date';
+                }
             }
-        });
-        if (!currentForm.fileBase64) {
+        }
+
+        // 3. Expiry Date - Required, valid date, must be future date, must be after issue date
+        if (!currentForm.expiryDate || currentForm.expiryDate.trim() === '') {
+            errors.expiryDate = 'Expiry date is required';
+        } else {
+            const dateValidation = validateDate(currentForm.expiryDate, true);
+            if (!dateValidation.isValid) {
+                errors.expiryDate = dateValidation.error;
+            } else {
+                const expiryDate = new Date(currentForm.expiryDate);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                if (expiryDate <= today) {
+                    errors.expiryDate = 'Expiry date must be a future date';
+                } else if (currentForm.issueDate) {
+                    const issueDate = new Date(currentForm.issueDate);
+                    if (expiryDate <= issueDate) {
+                        errors.expiryDate = 'Expiry date must be later than the issue date';
+                    }
+                }
+            }
+        }
+
+        // 4. Sponsor - Required (for employment and spouse visas), valid text (letters, numbers, spaces)
+        if (type === 'employment' || type === 'spouse') {
+            if (!currentForm.sponsor || currentForm.sponsor.trim() === '') {
+                errors.sponsor = 'Sponsor is required';
+            } else {
+                const trimmedSponsor = currentForm.sponsor.trim();
+                if (trimmedSponsor.length < 2) {
+                    errors.sponsor = 'Sponsor must be at least 2 characters';
+                } else if (!/^[A-Za-z0-9\s]+$/.test(trimmedSponsor)) {
+                    errors.sponsor = 'Sponsor must contain only letters, numbers, and spaces';
+                }
+            }
+        }
+
+        // 5. Visa Copy Upload - Required, only PDF, JPEG, or PNG
+        if (!currentForm.fileBase64 && !currentForm.file) {
             errors.file = 'Visa copy is required';
+        } else if (currentForm.file) {
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+            const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+            const fileExtension = '.' + currentForm.file.name.split('.').pop().toLowerCase();
+
+            if (!allowedTypes.includes(currentForm.file.type) && !allowedExtensions.includes(fileExtension)) {
+                errors.file = 'Only PDF, JPEG, or PNG file formats are allowed';
+            }
+        } else if (currentForm.fileName) {
+            // Check existing file extension
+            const fileExtension = '.' + currentForm.fileName.split('.').pop().toLowerCase();
+            const allowedExtensions = ['.pdf', '.jpeg', '.jpg', '.png'];
+            if (!allowedExtensions.includes(fileExtension)) {
+                errors.file = 'Only PDF, JPEG, or PNG file formats are allowed';
+            }
         }
 
         setVisaErrors(prev => ({
@@ -2969,22 +3566,69 @@ export default function EmployeeProfilePage() {
             // Validate required fields
             const errors = {};
 
-            // Validate Email (required)
+            // 1. Employee ID - Auto-generated, Read-only, Cannot be edited (no validation needed)
+
+            // 2. Validate Email (required, valid email format)
             const emailValidation = validateEmail(editForm.email, true);
             if (!emailValidation.isValid) {
                 errors.email = emailValidation.error;
             }
 
-            // Validate Contact Number (required)
-            const countryCode = extractCountryCode(editForm.contactNumber) || editCountryCode;
-            const phoneValidation = validatePhoneNumber(editForm.contactNumber, countryCode, true);
-            if (!phoneValidation.isValid) {
-                errors.contactNumber = phoneValidation.error;
+            // 3. Validate Contact Number (required, valid international format)
+            const contactDigits = (editForm.contactNumber || '').replace(/\D/g, '');
+            const contactValidation = validatePhoneNumber(contactDigits, editCountryCode, true);
+            if (!contactValidation.isValid) {
+                errors.contactNumber = contactValidation.error;
             }
 
-            // Validate Gender (required)
+            // 4. Validate Date of Birth (required, valid date)
+            const dobValidation = validateDate(editForm.dateOfBirth, true);
+            if (!dobValidation.isValid) {
+                errors.dateOfBirth = dobValidation.error;
+            }
+
+            // 5. Validate Marital Status (required, must be from predefined options)
+            const validMaritalStatuses = ['single', 'married', 'divorced', 'widowed'];
+            if (!editForm.maritalStatus || editForm.maritalStatus.trim() === '') {
+                errors.maritalStatus = 'Marital Status is required';
+            } else if (!validMaritalStatuses.includes(editForm.maritalStatus.toLowerCase())) {
+                errors.maritalStatus = 'Please select a valid marital status option';
+            }
+
+            // 6. Validate Father's Name (required, letters and spaces only - no numbers or special characters)
+            if (!editForm.fathersName || editForm.fathersName.trim() === '') {
+                errors.fathersName = 'Father\'s Name is required';
+            } else {
+                const trimmedName = editForm.fathersName.trim();
+                if (trimmedName.length < 2) {
+                    errors.fathersName = 'Father\'s Name must be at least 2 characters';
+                } else if (!/^[A-Za-z\s]+$/.test(trimmedName)) {
+                    errors.fathersName = 'Father\'s Name must contain only letters and spaces';
+                }
+            }
+
+            // 7. Validate Gender (required, must be selected from given options)
             if (!editForm.gender || editForm.gender.trim() === '') {
                 errors.gender = 'Gender is required';
+            } else {
+                const validGenders = ['male', 'female', 'other'];
+                if (!validGenders.includes(editForm.gender.toLowerCase())) {
+                    errors.gender = 'Please select a valid gender option';
+                }
+            }
+
+            // 8. Validate Nationality (required, must be from country list or valid text)
+            if (!editForm.nationality || editForm.nationality.trim() === '') {
+                errors.nationality = 'Nationality is required';
+            } else {
+                const trimmedNationality = editForm.nationality.trim();
+                if (trimmedNationality.length < 2) {
+                    errors.nationality = 'Nationality must be at least 2 characters';
+                } else if (!/^[A-Za-z\s'-]+$/.test(trimmedNationality)) {
+                    errors.nationality = 'Nationality must contain only letters, spaces, hyphens, and apostrophes';
+                }
+                // Optionally validate against country list if getAllCountryNames is available
+                // This is handled in the UI with a dropdown, but we validate the text format here
             }
 
             // If there are errors, set them and stop
@@ -2995,7 +3639,7 @@ export default function EmployeeProfilePage() {
             }
 
             // Format contact number to ensure it has + prefix if needed
-            const formattedContactNumber = formatPhoneForSave(editForm.contactNumber);
+            const formattedContactNumber = formatPhoneForSave(contactDigits);
 
             const updatePayload = {
                 employeeId: editForm.employeeId,
@@ -3088,7 +3732,47 @@ export default function EmployeeProfilePage() {
             setError('');
 
             const response = await axiosInstance.get(`/Employee/${employeeId}`);
-            const data = response.data?.employee || response.data;
+            let data = response.data?.employee || response.data;
+
+            // Check and auto-update probation status if period has ended
+            if (data && data.status === 'Probation' && data.dateOfJoining && data.probationPeriod) {
+                const joiningDate = new Date(data.dateOfJoining);
+                const probationEndDate = new Date(joiningDate);
+                probationEndDate.setMonth(probationEndDate.getMonth() + data.probationPeriod);
+
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                probationEndDate.setHours(0, 0, 0, 0);
+
+                // If probation period has ended, automatically update to Permanent
+                if (probationEndDate <= today) {
+                    try {
+                        await axiosInstance.patch(`/Employee/work-details/${employeeId}`, {
+                            status: 'Permanent',
+                            probationPeriod: null
+                        });
+                        // Refetch to get updated data
+                        const updatedResponse = await axiosInstance.get(`/Employee/${employeeId}`);
+                        data = updatedResponse.data?.employee || updatedResponse.data;
+                    } catch (updateErr) {
+                        console.error('Error auto-updating probation status:', updateErr);
+                        // Continue with original data if update fails
+                    }
+                }
+            } else if (data && data.status === 'Probation' && data.dateOfJoining && !data.probationPeriod) {
+                // Set default 6 months if not set
+                try {
+                    await axiosInstance.patch(`/Employee/work-details/${employeeId}`, {
+                        probationPeriod: 6
+                    });
+                    // Refetch to get updated data
+                    const updatedResponse = await axiosInstance.get(`/Employee/${employeeId}`);
+                    data = updatedResponse.data?.employee || updatedResponse.data;
+                } catch (updateErr) {
+                    console.error('Error setting default probation period:', updateErr);
+                    // Continue with original data if update fails
+                }
+            }
 
             setEmployee(data);
             if (data?.visaDetails) {
@@ -3115,7 +3799,16 @@ export default function EmployeeProfilePage() {
             setImageError(false); // Reset image error when employee data changes
         } catch (err) {
             console.error('Error fetching employee:', err);
-            setError(err.message || 'Unable to load employee details');
+            // Handle 403 Forbidden - user doesn't have permission
+            if (err.response?.status === 403) {
+                setError('You do not have permission to view this employee profile.');
+                // Redirect to employee list after a short delay
+                setTimeout(() => {
+                    router.push('/Employee');
+                }, 2000);
+            } else {
+                setError(err.response?.data?.message || err.message || 'Unable to load employee details');
+            }
         } finally {
             setLoading(false);
         }
@@ -3146,6 +3839,16 @@ export default function EmployeeProfilePage() {
             employee.passportDetails.countryOfIssue ||
             employee.passportDetails.document?.data)
     );
+    const hasSalaryDetails = () => {
+        if (!employee) return false;
+        return !!(
+            employee.basic ||
+            employee.houseRentAllowance ||
+            employee.otherAllowance ||
+            (employee.additionalAllowances && employee.additionalAllowances.length > 0)
+        );
+    };
+
     const hasBankDetailsSection = () => {
         if (!employee) return false;
         const bankFields = [
@@ -3208,11 +3911,6 @@ export default function EmployeeProfilePage() {
             employee.currentPostalCode)
     );
 
-    const formatDate = (dateString) => {
-        if (!dateString) return 'N/A';
-        const date = new Date(dateString);
-        return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    };
 
     // Calculate profile completion percentage with pending fields tracking
     const calculateProfileCompletion = () => {
@@ -3283,7 +3981,12 @@ export default function EmployeeProfilePage() {
         }
 
         // Visa fields (only if not UAE nationality)
-        const isVisaRequired = !employee?.nationality || employee.nationality.toLowerCase() !== 'uae';
+        const nationality = employee?.nationality?.toLowerCase()?.trim() || '';
+        const isVisaRequired = !nationality ||
+            (nationality !== 'uae' &&
+                nationality !== 'ae' &&
+                nationality !== 'united arab emirates' &&
+                nationality !== 'united arab emirate');
         if (isVisaRequired) {
             const visaTypes = ['visit', 'employment', 'spouse'];
             const hasAnyVisa = visaTypes.some(type => employee.visaDetails?.[type]?.number);
@@ -3397,34 +4100,7 @@ export default function EmployeeProfilePage() {
     };
 
     // Calculate years and months in company
-    const calculateTenure = () => {
-        if (!employee?.dateOfJoining) return null;
-        const joinDate = new Date(employee.dateOfJoining);
-        const today = new Date();
-        const years = today.getFullYear() - joinDate.getFullYear();
-        const months = today.getMonth() - joinDate.getMonth();
-        const totalMonths = years * 12 + months;
-        const finalYears = Math.floor(totalMonths / 12);
-        const finalMonths = totalMonths % 12;
-        return { years: finalYears, months: finalMonths };
-    };
-
-    // Calculate days until expiry
-    const calculateDaysUntilExpiry = (expiryDate) => {
-        if (!expiryDate) return null;
-        const expiry = new Date(expiryDate);
-        const today = new Date();
-        const diffTime = expiry - today;
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        return diffDays;
-    };
-
-    const getInitials = (firstName, lastName) => {
-        const first = firstName?.charAt(0) || '';
-        const last = lastName?.charAt(0) || '';
-        return (first + last).toUpperCase();
-    };
-
+    // Calculate tenure using helper function
     // Handle file selection
     const handleFileSelect = (e) => {
         const file = e.target.files?.[0];
@@ -3530,7 +4206,7 @@ export default function EmployeeProfilePage() {
         }
     };
 
-    const tenure = calculateTenure();
+    const tenure = calculateTenure(employee?.dateOfJoining);
     const profileCompletionData = calculateProfileCompletion();
     const profileCompletion = profileCompletionData.percentage;
     const pendingFields = profileCompletionData.pendingFields;
@@ -3541,8 +4217,9 @@ export default function EmployeeProfilePage() {
     const canSendForApproval = approvalStatus === 'draft' && isProfileReady;
 
     // Calculate visa expiry days from visaDetails (check all visa types and find earliest expiry)
+    // Only calculate for non-UAE nationals
     let visaDays = null;
-    if (employee?.visaDetails) {
+    if (!isUAENationality() && employee?.visaDetails) {
         const visaTypes = ['visit', 'employment', 'spouse'];
         let earliestExpiryDate = null;
 
@@ -3564,7 +4241,8 @@ export default function EmployeeProfilePage() {
     // Calculate EID and Medical expiry days (only if they exist)
     const eidDays = employee?.eidExp ? calculateDaysUntilExpiry(employee.eidExp) : null;
     const medDays = employee?.medExp ? calculateDaysUntilExpiry(employee.medExp) : null;
-    const isVisaRequirementApplicable = !employee?.nationality || employee.nationality.toLowerCase() !== 'uae';
+
+    const isVisaRequirementApplicable = !isUAENationality();
 
     // Status color function for Employment Summary
     const getStatusColor = (type) => {
@@ -3641,270 +4319,39 @@ export default function EmployeeProfilePage() {
                             {/* Profile Card and Employment Summary */}
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                                 {/* Profile Card */}
-                                <div className="lg:col-span-1 bg-white rounded-lg shadow-sm p-6">
-                                    <div className="flex items-start gap-6">
-                                        {/* Profile Picture - Rectangular */}
-                                        <div className="relative flex-shrink-0 group">
-                                            <div className="w-32 h-40 rounded-lg overflow-hidden border border-gray-200 shadow-sm bg-blue-500 relative">
-                                                {(employee.profilePicture || employee.profilePic || employee.avatar) && !imageError ? (
-                                                    <Image
-                                                        src={employee.profilePicture || employee.profilePic || employee.avatar}
-                                                        alt={`${employee.firstName} ${employee.lastName}`}
-                                                        fill
-                                                        className="object-cover"
-                                                        onError={() => setImageError(true)}
-                                                        unoptimized
-                                                    />
-                                                ) : (
-                                                    <div className="w-full h-full flex items-center justify-center text-white text-4xl font-semibold">
-                                                        {getInitials(employee.firstName, employee.lastName)}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            {/* Online Status Indicator */}
-                                            <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full"></div>
-                                            {/* Camera/Edit Button */}
-                                            <button
-                                                onClick={() => {
-                                                    const input = document.createElement('input');
-                                                    input.type = 'file';
-                                                    input.accept = 'image/*';
-                                                    input.onchange = handleFileSelect;
-                                                    input.click();
-                                                }}
-                                                className="absolute top-2 right-2 w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all opacity-0 group-hover:opacity-100"
-                                                title="Change profile picture"
-                                            >
-                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                                                    <circle cx="12" cy="13" r="4"></circle>
-                                                </svg>
-                                            </button>
-                                        </div>
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-2">
-                                                <h1 className="text-2xl font-bold text-gray-800">
-                                                    {employee.firstName} {employee.lastName}
-                                                </h1>
-                                                {employee.status && (
-                                                    <div className="flex items-center gap-2">
-                                                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${employee.status === 'Probation' ? 'bg-[#3B82F6]/15 text-[#1D4ED8]' :
-                                                            employee.status === 'Permanent' ? 'bg-[#10B981]/15 text-[#065F46]' :
-                                                                employee.status === 'Temporary' ? 'bg-[#F59E0B]/15 text-[#92400E]' :
-                                                                    employee.status === 'Notice' ? 'bg-[#EF4444]/15 text-[#991B1B]' :
-                                                                        'bg-gray-100 text-gray-700'
-                                                            }`}>
-                                                            {employee.status}
-                                                        </span>
-                                                        {employee.status === 'Probation' && employee.probationPeriod && (
-                                                            <span className="px-2 py-1 rounded text-xs font-medium bg-[#3B82F6]/10 text-[#1D4ED8] border border-[#3B82F6]/20">
-                                                                {employee.probationPeriod} Month{employee.probationPeriod > 1 ? 's' : ''}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <p className="text-gray-600 mb-3">{employee.role || employee.designation || 'Employee'}</p>
-
-                                            {/* Contact Info */}
-                                            {(employee.contactNumber || employee.email || employee.workEmail) && (
-                                                <div className="space-y-2 mb-4">
-                                                    {employee.contactNumber && (
-                                                        <div className="flex items-center gap-2 text-gray-600 text-sm">
-                                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
-                                                            </svg>
-                                                            <span>{employee.contactNumber}</span>
-                                                        </div>
-                                                    )}
-                                                    {(employee.email || employee.workEmail) && (
-                                                        <div className="flex items-center gap-2 text-gray-600 text-sm">
-                                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
-                                                                <polyline points="22,6 12,13 2,6"></polyline>
-                                                            </svg>
-                                                            <span>{employee.email || employee.workEmail}</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-
-                                        </div>
-                                    </div>
-
-                                    {/* Profile Status */}
-                                    <div className="mt-6">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="text-sm font-medium text-gray-700">Profile Status</span>
-                                            <span className="text-sm font-semibold text-gray-800">{profileCompletion}%</span>
-                                        </div>
-                                        <div
-                                            className="relative w-full"
-                                            onMouseEnter={() => setShowProgressTooltip(true)}
-                                            onMouseLeave={() => setShowProgressTooltip(false)}
-                                        >
-                                            <div className="w-full bg-gray-200 rounded-full h-2.5 cursor-pointer">
-                                                <div
-                                                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-                                                    style={{ width: `${profileCompletion}%` }}
-                                                ></div>
-                                            </div>
-
-                                            {/* Tooltip showing next pending field */}
-                                            {showProgressTooltip && pendingFields.length > 0 && (
-                                                <div className="absolute bottom-full left-0 mb-2 w-72 bg-white/95 text-gray-700 text-xs rounded-lg shadow-lg border border-gray-200 p-3 z-50 backdrop-blur-sm">
-                                                    <div className="font-semibold mb-1.5 text-sm text-gray-800">Next to Complete:</div>
-                                                    <div className="flex flex-col">
-                                                        <span className="font-medium text-gray-600">{pendingFields[0].section}:</span>
-                                                        <span className="mt-0.5 text-gray-500">{pendingFields[0].field}</span>
-                                                    </div>
-                                                    {pendingFields.length > 1 && (
-                                                        <div className="mt-2 pt-2 border-t border-gray-200 text-xs text-gray-400">
-                                                            +{pendingFields.length - 1} more field{pendingFields.length - 1 > 1 ? 's' : ''} pending
-                                                        </div>
-                                                    )}
-                                                    <div className="absolute bottom-0 left-4 transform translate-y-full">
-                                                        <div className="border-4 border-transparent border-t-white/95"></div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="mt-3 flex flex-col gap-2 items-end">
-                                            {canSendForApproval && (
-                                                <div className="w-full max-w-xs flex items-center gap-2">
-                                                    <span className="flex-1 text-xs font-medium text-gray-600 bg-blue-50 border border-blue-200 px-3 py-2 rounded-lg">
-                                                        Ready to notify the reporting authority.
-                                                    </span>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleSubmitForApproval();
-                                                        }}
-                                                        disabled={sendingApproval}
-                                                        className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm bg-green-500 text-white hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-60"
-                                                    >
-                                                        {sendingApproval ? 'Sending...' : 'Send for Activation'}
-                                                    </button>
-                                                </div>
-                                            )}
-                                            {awaitingApproval && (
-                                                <div className="w-full max-w-xs flex items-center gap-2">
-                                                    <span className="flex-1 text-xs font-medium text-gray-600 bg-yellow-50 border border-yellow-200 px-3 py-2 rounded-lg">
-                                                        Request sent. Awaiting reporting authority activation.
-                                                    </span>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleActivateProfile();
-                                                        }}
-                                                        disabled={activatingProfile}
-                                                        className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm bg-blue-500 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-60"
-                                                    >
-                                                        {activatingProfile ? 'Activating...' : 'Activate Profile'}
-                                                    </button>
-                                                </div>
-                                            )}
-                                            {profileApproved && (
-                                                <div className="w-full max-w-xs flex justify-end">
-                                                    <span className="px-4 py-2 rounded-lg text-sm font-semibold bg-green-100 text-green-700 border border-green-200">
-                                                        Profile activated
-                                                    </span>
-                                                </div>
-                                            )}
-
-                                        </div>
-                                    </div>
-                                </div>
+                                <ProfileHeader
+                                    employee={employee}
+                                    imageError={imageError}
+                                    setImageError={setImageError}
+                                    handleFileSelect={handleFileSelect}
+                                    profileCompletion={profileCompletion}
+                                    showProgressTooltip={showProgressTooltip}
+                                    setShowProgressTooltip={setShowProgressTooltip}
+                                    pendingFields={pendingFields}
+                                    canSendForApproval={canSendForApproval}
+                                    handleSubmitForApproval={handleSubmitForApproval}
+                                    sendingApproval={sendingApproval}
+                                    awaitingApproval={awaitingApproval}
+                                    handleActivateProfile={handleActivateProfile}
+                                    activatingProfile={activatingProfile}
+                                    profileApproved={profileApproved}
+                                />
 
                                 {/* Employment Summary Card */}
-                                <div className="relative rounded-lg overflow-hidden shadow-sm text-white">
-                                    <div className="absolute inset-0 bg-gradient-to-r from-sky-500 via-sky-500 to-sky-400"></div>
-                                    <div className="absolute -left-24 -bottom-24 w-64 h-64 bg-blue-700/40 rounded-full"></div>
-                                    <div className="absolute -right-16 -top-16 w-48 h-48 bg-sky-300/30 rounded-full"></div>
-
-                                    <div className="relative p-6">
-                                        <h2 className="text-2xl font-semibold text-white mb-4">Employment Summary</h2>
-                                        <div className="flex items-start gap-20">
-                                            {/* Tie Icon Image */}
-                                            <div
-                                                className="relative flex-shrink-0"
-                                                style={{ width: '114px', height: '177px' }}
-                                            >
-                                                <Image
-                                                    src="/assets/employee/tie-img.png"
-                                                    alt="Employment Summary"
-                                                    fill
-                                                    className="object-contain"
-                                                    priority
-                                                    sizes="114px"
-                                                    unoptimized
-                                                />
-                                            </div>
-
-                                            {/* Status List */}
-                                            <div className="flex-1 space-y-3 pt-8 ">
-                                                {statusItems.map((item, index) => (
-                                                    <div key={index} className="flex items-center gap-3">
-                                                        <div className={`w-5 h-2 rounded-full ${getStatusColor(item.type)}`} />
-                                                        <p className="text-white text-base">{item.text}</p>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                <EmploymentSummary
+                                    statusItems={statusItems}
+                                    getStatusColor={getStatusColor}
+                                />
                             </div>
 
                             {/* Main Tabs */}
-                            <div className=" rounded-lg shadow-sm">
-                                <div className="px-6 pt-4">
-                                    <div className="rounded-2xl shadow-sm px-6 py-4 flex items-center justify-between bg-transparent">
-                                        <div className="flex items-center gap-6 text-sm font-semibold">
-                                            <button
-                                                onClick={() => { setActiveTab('basic'); setActiveSubTab('basic-details'); }}
-                                                className={`relative pb-2 transition-colors ${activeTab === 'basic'
-                                                    ? 'text-blue-600 after:content-[\'\'] after:absolute after:left-0 after:-bottom-1 after:w-full after:h-0.5 after:bg-blue-500'
-                                                    : 'text-gray-400 hover:text-gray-600'
-                                                    }`}
-                                            >
-                                                Basic Details
-                                            </button>
-                                            <button
-                                                onClick={() => setActiveTab('work-details')}
-                                                className={`relative pb-2 transition-colors ${activeTab === 'work-details'
-                                                    ? 'text-blue-600 after:content-[\'\'] after:absolute after:left-0 after:-bottom-1 after:w-full after:h-0.5 after:bg-blue-500'
-                                                    : 'text-gray-400 hover:text-gray-600'
-                                                    }`}
-                                            >
-                                                Work Details
-                                            </button>
-                                            <button
-                                                onClick={() => setActiveTab('salary')}
-                                                className={`relative pb-2 transition-colors ${activeTab === 'salary'
-                                                    ? 'text-blue-600 after:content-[\'\'] after:absolute after:left-0 after:-bottom-1 after:w-full after:h-0.5 after:bg-blue-500'
-                                                    : 'text-gray-400 hover:text-gray-600'
-                                                    }`}
-                                            >
-                                                Salary
-                                            </button>
-                                            <button
-                                                onClick={() => setActiveTab('personal')}
-                                                className={`relative pb-2 transition-colors ${activeTab === 'personal'
-                                                    ? 'text-blue-600 after:content-[\'\'] after:absolute after:left-0 after:-bottom-1 after:w-full after:h-0.5 after:bg-blue-500'
-                                                    : 'text-gray-400 hover:text-gray-600'
-                                                    }`}
-                                            >
-                                                Personal Information
-                                            </button>
-                                        </div>
-                                        <button className="px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold rounded-md flex items-center gap-2 shadow-sm">
-                                            Add More
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                <polyline points="6 9 12 15 18 9"></polyline>
-                                            </svg>
-                                        </button>
-                                    </div>
-                                </div>
+                            <div className="rounded-lg shadow-sm">
+                                <TabNavigation
+                                    activeTab={activeTab}
+                                    setActiveTab={setActiveTab}
+                                    setActiveSubTab={setActiveSubTab}
+                                    setShowAddMoreModal={setShowAddMoreModal}
+                                />
 
                                 {/* Tab Content */}
                                 <div className="p-6">
@@ -3945,77 +4392,83 @@ export default function EmployeeProfilePage() {
                                                 <div className="space-y-6">
                                                     {/* Dynamically Stacked Cards - Grid Layout */}
                                                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                                                        {/* Basic Details Card - Always shown */}
-                                                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-                                                            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                                                                <h3 className="text-xl font-semibold text-gray-800">Basic Details</h3>
-                                                                <button
-                                                                    onClick={openEditModal}
-                                                                    className="text-blue-600 hover:text-blue-700"
-                                                                >
-                                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                    </svg>
-                                                                </button>
-                                                            </div>
-                                                            <div>
-                                                                {[
-                                                                    { label: 'Employee ID', value: employee.employeeId },
-                                                                    { label: 'Email', value: employee.email || employee.workEmail },
-                                                                    { label: 'Contact Number', value: employee.contactNumber },
-                                                                    {
-                                                                        label: 'Date of Birth',
-                                                                        value: employee.dateOfBirth ? (() => {
-                                                                            const date = new Date(employee.dateOfBirth);
-                                                                            const month = String(date.getMonth() + 1).padStart(2, '0');
-                                                                            const day = String(date.getDate()).padStart(2, '0');
-                                                                            const year = date.getFullYear();
-                                                                            return `${month}/${day}/${year}`;
-                                                                        })() : null
-                                                                    },
-                                                                    {
-                                                                        label: 'Marital Status',
-                                                                        value: employee.maritalStatus
-                                                                            ? employee.maritalStatus.charAt(0).toUpperCase() + employee.maritalStatus.slice(1)
-                                                                            : null
-                                                                    },
-                                                                    { label: 'Father\'s Name', value: employee.fathersName },
-                                                                    {
-                                                                        label: 'Gender',
-                                                                        value: employee.gender
-                                                                            ? employee.gender.charAt(0).toUpperCase() + employee.gender.slice(1)
-                                                                            : null
-                                                                    },
-                                                                    { label: 'Nationality', value: employee.nationality || employee.country }
-                                                                ]
-                                                                    .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
-                                                                    .map((row, index, arr) => (
-                                                                        <div
-                                                                            key={row.label}
-                                                                            className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
+                                                        {/* Basic Details Card - Show only if permission isActive is true */}
+                                                        {(isAdmin() || hasPermission('hrm_employees_view_basic', 'isActive')) && (
+                                                            <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
+                                                                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                                                                    <h3 className="text-xl font-semibold text-gray-800">Basic Details</h3>
+                                                                    {(isAdmin() || hasPermission('hrm_employees_view_basic', 'isEdit')) && (
+                                                                        <button
+                                                                            onClick={openEditModal}
+                                                                            className="text-blue-600 hover:text-blue-700"
                                                                         >
-                                                                            <span className="text-gray-500">{row.label}</span>
-                                                                            <span className="text-gray-500">{row.value}</span>
-                                                                        </div>
-                                                                    ))}
+                                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                            </svg>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                                <div>
+                                                                    {[
+                                                                        { label: 'Employee ID', value: employee.employeeId },
+                                                                        { label: 'Email', value: employee.email || employee.workEmail },
+                                                                        { label: 'Contact Number', value: employee.contactNumber },
+                                                                        {
+                                                                            label: 'Date of Birth',
+                                                                            value: employee.dateOfBirth ? (() => {
+                                                                                const date = new Date(employee.dateOfBirth);
+                                                                                const month = String(date.getMonth() + 1).padStart(2, '0');
+                                                                                const day = String(date.getDate()).padStart(2, '0');
+                                                                                const year = date.getFullYear();
+                                                                                return `${month}/${day}/${year}`;
+                                                                            })() : null
+                                                                        },
+                                                                        {
+                                                                            label: 'Marital Status',
+                                                                            value: employee.maritalStatus
+                                                                                ? employee.maritalStatus.charAt(0).toUpperCase() + employee.maritalStatus.slice(1)
+                                                                                : null
+                                                                        },
+                                                                        { label: 'Father\'s Name', value: employee.fathersName },
+                                                                        {
+                                                                            label: 'Gender',
+                                                                            value: employee.gender
+                                                                                ? employee.gender.charAt(0).toUpperCase() + employee.gender.slice(1)
+                                                                                : null
+                                                                        },
+                                                                        { label: 'Nationality', value: getCountryName(employee.nationality || employee.country) }
+                                                                    ]
+                                                                        .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
+                                                                        .map((row, index, arr) => (
+                                                                            <div
+                                                                                key={row.label}
+                                                                                className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
+                                                                            >
+                                                                                <span className="text-gray-500">{row.label}</span>
+                                                                                <span className="text-gray-500">{row.value}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                </div>
                                                             </div>
-                                                        </div>
+                                                        )}
 
-                                                        {/* Passport Card - Show only if data exists */}
-                                                        {employee.passportDetails?.number && (
+                                                        {/* Passport Card - Show only if permission isActive is true AND data exists */}
+                                                        {(isAdmin() || hasPermission('hrm_employees_view_passport', 'isActive')) && employee.passportDetails?.number && (
                                                             <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
                                                                 <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
                                                                     <h3 className="text-xl font-semibold text-gray-800">Passport Details</h3>
-                                                                    <button
-                                                                        onClick={handleOpenPassportModal}
-                                                                        className="text-blue-600 hover:text-blue-700"
-                                                                    >
-                                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                        </svg>
-                                                                    </button>
+                                                                    {(isAdmin() || hasPermission('hrm_employees_view_passport', 'isEdit')) && (
+                                                                        <button
+                                                                            onClick={handleOpenPassportModal}
+                                                                            className="text-blue-600 hover:text-blue-700"
+                                                                        >
+                                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                            </svg>
+                                                                        </button>
+                                                                    )}
                                                                 </div>
                                                                 <div>
                                                                     {[
@@ -4038,23 +4491,25 @@ export default function EmployeeProfilePage() {
                                                             </div>
                                                         )}
 
-                                                        {/* Visa Card - Show only if data exists, automatically stacks next */}
-                                                        {(employee.visaDetails?.visit?.number ||
+                                                        {/* Visa Card - Show only if permission isActive is true AND data exists and nationality is not UAE */}
+                                                        {(isAdmin() || hasPermission('hrm_employees_view_visa', 'isActive')) && !isUAENationality() && (employee.visaDetails?.visit?.number ||
                                                             employee.visaDetails?.employment?.number ||
                                                             employee.visaDetails?.spouse?.number) && (
                                                                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
                                                                     <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
                                                                         <h3 className="text-xl font-semibold text-gray-800">Visa Details</h3>
                                                                         <div className="relative">
-                                                                            <button
-                                                                                onClick={() => handleOpenVisaModal()}
-                                                                                className="text-blue-600 hover:text-blue-700"
-                                                                            >
-                                                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                                </svg>
-                                                                            </button>
+                                                                            {(isAdmin() || hasPermission('hrm_employees_view_visa', 'isEdit')) && (
+                                                                                <button
+                                                                                    onClick={() => handleOpenVisaModal()}
+                                                                                    className="text-blue-600 hover:text-blue-700"
+                                                                                >
+                                                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                                    </svg>
+                                                                                </button>
+                                                                            )}
                                                                             {showVisaDropdown && (
                                                                                 <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border border-gray-200 bg-white shadow-lg">
                                                                                     {visaTypes.map((type) => (
@@ -4158,213 +4613,223 @@ export default function EmployeeProfilePage() {
 
                                             {activeSubTab === 'education' && (
                                                 <div className="space-y-6">
-                                                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                                                        <div className="flex items-center justify-between mb-4">
-                                                            <h3 className="text-xl font-semibold text-gray-800">Education Details</h3>
-                                                            <button
-                                                                onClick={handleOpenEducationModal}
-                                                                className="px-5 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
-                                                            >
-                                                                Add Education
-                                                                <span className="text-lg leading-none">+</span>
-                                                            </button>
-                                                        </div>
+                                                    {/* Education Details - Show only if permission isActive is true */}
+                                                    {(isAdmin() || hasPermission('hrm_employees_view_education', 'isActive')) && (
+                                                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                                                            <div className="flex items-center justify-between mb-4">
+                                                                <h3 className="text-xl font-semibold text-gray-800">Education Details</h3>
+                                                                {(isAdmin() || hasPermission('hrm_employees_view_education', 'isCreate')) && (
+                                                                    <button
+                                                                        onClick={handleOpenEducationModal}
+                                                                        className="px-5 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
+                                                                    >
+                                                                        Add Education
+                                                                        <span className="text-lg leading-none">+</span>
+                                                                    </button>
+                                                                )}
+                                                            </div>
 
-                                                        <div className="overflow-x-auto">
-                                                            <table className="w-full">
-                                                                <thead>
-                                                                    <tr className="border-b border-gray-200">
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">University / Board</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">College / Institute</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Course</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Field of Study</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Completed Year</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Certificate</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Actions</th>
-                                                                    </tr>
-                                                                </thead>
-                                                                <tbody>
-                                                                    {educationDetails && educationDetails.length > 0 ? (
-                                                                        educationDetails.map((education) => {
-                                                                            const educationId = education._id || education.id;
-                                                                            return (
-                                                                                <tr key={educationId} className="border-b border-gray-100 hover:bg-gray-50">
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{education.universityOrBoard || education.university || education.board || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{education.collegeOrInstitute || education.college || education.institute || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{education.course || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{education.fieldOfStudy || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{education.completedYear || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">
-                                                                                        {education.certificate?.name ? (
-                                                                                            <button
-                                                                                                onClick={() => {
-                                                                                                    setViewingDocument({
-                                                                                                        data: education.certificate.data || '',
-                                                                                                        name: education.certificate.name || '',
-                                                                                                        mimeType: education.certificate.mimeType || ''
-                                                                                                    });
-                                                                                                    setShowDocumentViewer(true);
-                                                                                                }}
-                                                                                                className="text-blue-600 hover:text-blue-700 underline"
-                                                                                            >
-                                                                                                {education.certificate.name}
-                                                                                            </button>
-                                                                                        ) : (
-                                                                                            '—'
-                                                                                        )}
-                                                                                    </td>
-                                                                                    <td className="py-3 px-4 text-sm">
-                                                                                        <div className="flex items-center gap-2">
-                                                                                            <button
-                                                                                                onClick={() => handleEditEducation(education)}
-                                                                                                className="text-blue-600 hover:text-blue-700"
-                                                                                                disabled={deletingEducationId === educationId}
-                                                                                            >
-                                                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                                                </svg>
-                                                                                            </button>
-                                                                                            <button
-                                                                                                onClick={() => handleDeleteEducation(educationId)}
-                                                                                                className="text-red-600 hover:text-red-700"
-                                                                                                disabled={deletingEducationId === educationId}
-                                                                                            >
-                                                                                                {deletingEducationId === educationId ? (
-                                                                                                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                                                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                                                                    </svg>
-                                                                                                ) : (
-                                                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                                        <polyline points="3 6 5 6 21 6"></polyline>
-                                                                                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                                                                                                    </svg>
-                                                                                                )}
-                                                                                            </button>
-                                                                                        </div>
-                                                                                    </td>
-                                                                                </tr>
-                                                                            );
-                                                                        })
-                                                                    ) : (
-                                                                        <tr>
-                                                                            <td colSpan={7} className="py-16 text-center text-gray-400 text-sm">
-                                                                                No education details available
-                                                                            </td>
+                                                            <div className="overflow-x-auto">
+                                                                <table className="w-full">
+                                                                    <thead>
+                                                                        <tr className="border-b border-gray-200">
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">University / Board</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">College / Institute</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Course</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Field of Study</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Completed Year</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Certificate</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Actions</th>
                                                                         </tr>
-                                                                    )}
-                                                                </tbody>
-                                                            </table>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        {educationDetails && educationDetails.length > 0 ? (
+                                                                            educationDetails.map((education) => {
+                                                                                const educationId = education._id || education.id;
+                                                                                return (
+                                                                                    <tr key={educationId} className="border-b border-gray-100 hover:bg-gray-50">
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{education.universityOrBoard || education.university || education.board || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{education.collegeOrInstitute || education.college || education.institute || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{education.course || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{education.fieldOfStudy || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{education.completedYear || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">
+                                                                                            {education.certificate?.name ? (
+                                                                                                <button
+                                                                                                    onClick={() => {
+                                                                                                        setViewingDocument({
+                                                                                                            data: education.certificate.data || '',
+                                                                                                            name: education.certificate.name || '',
+                                                                                                            mimeType: education.certificate.mimeType || ''
+                                                                                                        });
+                                                                                                        setShowDocumentViewer(true);
+                                                                                                    }}
+                                                                                                    className="text-blue-600 hover:text-blue-700 underline"
+                                                                                                >
+                                                                                                    {education.certificate.name}
+                                                                                                </button>
+                                                                                            ) : (
+                                                                                                '—'
+                                                                                            )}
+                                                                                        </td>
+                                                                                        <td className="py-3 px-4 text-sm">
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <button
+                                                                                                    onClick={() => handleEditEducation(education)}
+                                                                                                    className="text-blue-600 hover:text-blue-700"
+                                                                                                    disabled={deletingEducationId === educationId}
+                                                                                                >
+                                                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                                                    </svg>
+                                                                                                </button>
+                                                                                                <button
+                                                                                                    onClick={() => handleDeleteEducation(educationId)}
+                                                                                                    className="text-red-600 hover:text-red-700"
+                                                                                                    disabled={deletingEducationId === educationId}
+                                                                                                >
+                                                                                                    {deletingEducationId === educationId ? (
+                                                                                                        <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                                                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                                                        </svg>
+                                                                                                    ) : (
+                                                                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                                                                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                                                                        </svg>
+                                                                                                    )}
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        </td>
+                                                                                    </tr>
+                                                                                );
+                                                                            })
+                                                                        ) : (
+                                                                            <tr>
+                                                                                <td colSpan={7} className="py-16 text-center text-gray-400 text-sm">
+                                                                                    No education details available
+                                                                                </td>
+                                                                            </tr>
+                                                                        )}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
                                                         </div>
-                                                    </div>
+                                                    )}
                                                 </div>
                                             )}
 
                                             {activeSubTab === 'experience' && (
                                                 <div className="space-y-6">
-                                                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                                                        <div className="flex items-center justify-between mb-4">
-                                                            <h3 className="text-xl font-semibold text-gray-800">Experience Details</h3>
-                                                            <button
-                                                                onClick={handleOpenExperienceModal}
-                                                                className="px-5 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
-                                                            >
-                                                                Add Experience
-                                                                <span className="text-lg leading-none">+</span>
-                                                            </button>
-                                                        </div>
+                                                    {/* Experience Details - Show only if permission isActive is true */}
+                                                    {(isAdmin() || hasPermission('hrm_employees_view_experience', 'isActive')) && (
+                                                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                                                            <div className="flex items-center justify-between mb-4">
+                                                                <h3 className="text-xl font-semibold text-gray-800">Experience Details</h3>
+                                                                {(isAdmin() || hasPermission('hrm_employees_view_experience', 'isCreate')) && (
+                                                                    <button
+                                                                        onClick={handleOpenExperienceModal}
+                                                                        className="px-5 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
+                                                                    >
+                                                                        Add Experience
+                                                                        <span className="text-lg leading-none">+</span>
+                                                                    </button>
+                                                                )}
+                                                            </div>
 
-                                                        <div className="overflow-x-auto">
-                                                            <table className="w-full">
-                                                                <thead>
-                                                                    <tr className="border-b border-gray-200">
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Company</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Designation</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Start Date</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">End Date</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Certificate</th>
-                                                                        <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Actions</th>
-                                                                    </tr>
-                                                                </thead>
-                                                                <tbody>
-                                                                    {experienceDetails && experienceDetails.length > 0 ? (
-                                                                        experienceDetails.map((experience) => {
-                                                                            const experienceId = experience._id || experience.id;
-                                                                            return (
-                                                                                <tr key={experienceId} className="border-b border-gray-100 hover:bg-gray-50">
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{experience.company || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">{experience.designation || '—'}</td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">
-                                                                                        {experience.startDate ? (typeof experience.startDate === 'string' ? formatDate(experience.startDate) : formatDate(experience.startDate)) : '—'}
-                                                                                    </td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">
-                                                                                        {experience.endDate ? (typeof experience.endDate === 'string' ? formatDate(experience.endDate) : formatDate(experience.endDate)) : '—'}
-                                                                                    </td>
-                                                                                    <td className="py-3 px-4 text-sm text-gray-500">
-                                                                                        {experience.certificate?.name ? (
-                                                                                            <button
-                                                                                                onClick={() => {
-                                                                                                    setViewingDocument({
-                                                                                                        data: experience.certificate.data || '',
-                                                                                                        name: experience.certificate.name || '',
-                                                                                                        mimeType: experience.certificate.mimeType || ''
-                                                                                                    });
-                                                                                                    setShowDocumentViewer(true);
-                                                                                                }}
-                                                                                                className="text-blue-600 hover:text-blue-700 underline"
-                                                                                            >
-                                                                                                {experience.certificate.name}
-                                                                                            </button>
-                                                                                        ) : (
-                                                                                            '—'
-                                                                                        )}
-                                                                                    </td>
-                                                                                    <td className="py-3 px-4 text-sm">
-                                                                                        <div className="flex items-center gap-2">
-                                                                                            <button
-                                                                                                onClick={() => handleEditExperience(experience)}
-                                                                                                className="text-blue-600 hover:text-blue-700"
-                                                                                                disabled={deletingExperienceId === experienceId}
-                                                                                            >
-                                                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                                                </svg>
-                                                                                            </button>
-                                                                                            <button
-                                                                                                onClick={() => handleDeleteExperience(experienceId)}
-                                                                                                className="text-red-600 hover:text-red-700"
-                                                                                                disabled={deletingExperienceId === experienceId}
-                                                                                            >
-                                                                                                {deletingExperienceId === experienceId ? (
-                                                                                                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
-                                                                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                                                                    </svg>
-                                                                                                ) : (
-                                                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                                        <polyline points="3 6 5 6 21 6"></polyline>
-                                                                                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                                                                                                    </svg>
-                                                                                                )}
-                                                                                            </button>
-                                                                                        </div>
-                                                                                    </td>
-                                                                                </tr>
-                                                                            );
-                                                                        })
-                                                                    ) : (
-                                                                        <tr>
-                                                                            <td colSpan={6} className="py-16 text-center text-gray-400 text-sm">
-                                                                                No experience details available
-                                                                            </td>
+                                                            <div className="overflow-x-auto">
+                                                                <table className="w-full">
+                                                                    <thead>
+                                                                        <tr className="border-b border-gray-200">
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Company</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Designation</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Start Date</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">End Date</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Certificate</th>
+                                                                            <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">Actions</th>
                                                                         </tr>
-                                                                    )}
-                                                                </tbody>
-                                                            </table>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        {experienceDetails && experienceDetails.length > 0 ? (
+                                                                            experienceDetails.map((experience) => {
+                                                                                const experienceId = experience._id || experience.id;
+                                                                                return (
+                                                                                    <tr key={experienceId} className="border-b border-gray-100 hover:bg-gray-50">
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{experience.company || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">{experience.designation || '—'}</td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">
+                                                                                            {experience.startDate ? (typeof experience.startDate === 'string' ? formatDate(experience.startDate) : formatDate(experience.startDate)) : '—'}
+                                                                                        </td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">
+                                                                                            {experience.endDate ? (typeof experience.endDate === 'string' ? formatDate(experience.endDate) : formatDate(experience.endDate)) : '—'}
+                                                                                        </td>
+                                                                                        <td className="py-3 px-4 text-sm text-gray-500">
+                                                                                            {experience.certificate?.name ? (
+                                                                                                <button
+                                                                                                    onClick={() => {
+                                                                                                        setViewingDocument({
+                                                                                                            data: experience.certificate.data || '',
+                                                                                                            name: experience.certificate.name || '',
+                                                                                                            mimeType: experience.certificate.mimeType || ''
+                                                                                                        });
+                                                                                                        setShowDocumentViewer(true);
+                                                                                                    }}
+                                                                                                    className="text-blue-600 hover:text-blue-700 underline"
+                                                                                                >
+                                                                                                    {experience.certificate.name}
+                                                                                                </button>
+                                                                                            ) : (
+                                                                                                '—'
+                                                                                            )}
+                                                                                        </td>
+                                                                                        <td className="py-3 px-4 text-sm">
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <button
+                                                                                                    onClick={() => handleEditExperience(experience)}
+                                                                                                    className="text-blue-600 hover:text-blue-700"
+                                                                                                    disabled={deletingExperienceId === experienceId}
+                                                                                                >
+                                                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                                                    </svg>
+                                                                                                </button>
+                                                                                                <button
+                                                                                                    onClick={() => handleDeleteExperience(experienceId)}
+                                                                                                    className="text-red-600 hover:text-red-700"
+                                                                                                    disabled={deletingExperienceId === experienceId}
+                                                                                                >
+                                                                                                    {deletingExperienceId === experienceId ? (
+                                                                                                        <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                                                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                                                        </svg>
+                                                                                                    ) : (
+                                                                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                                                                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                                                                                        </svg>
+                                                                                                    )}
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        </td>
+                                                                                    </tr>
+                                                                                );
+                                                                            })
+                                                                        ) : (
+                                                                            <tr>
+                                                                                <td colSpan={6} className="py-16 text-center text-gray-400 text-sm">
+                                                                                    No experience details available
+                                                                                </td>
+                                                                            </tr>
+                                                                        )}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
                                                         </div>
-                                                    </div>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
@@ -4373,130 +4838,39 @@ export default function EmployeeProfilePage() {
                                     {activeTab === 'work-details' && (
                                         <div className="space-y-6">
                                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                                                {/* Work Details Card */}
-                                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-                                                    <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                                                        <h3 className="text-xl font-semibold text-gray-800">Work Details</h3>
-                                                        <button
-                                                            onClick={openWorkDetailsModal}
-                                                            className="text-blue-600 hover:text-blue-700"
-                                                        >
-                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                            </svg>
-                                                        </button>
-                                                    </div>
-                                                    <div>
-                                                        {[
-                                                            { label: 'Department', value: employee.department ? departmentOptions.find(opt => opt.value === employee.department)?.label || employee.department : '—' },
-                                                            { label: 'Designation', value: employee.designation ? designationOptions.find(opt => opt.value === employee.designation)?.label || employee.designation : '—' },
-                                                            {
-                                                                label: 'Work Status',
-                                                                value: (() => {
-                                                                    if (!employee.status) return '—';
-                                                                    if (employee.status !== 'Probation' || !employee.probationPeriod) {
-                                                                        return employee.status;
-                                                                    }
-                                                                    return `${employee.status} (${employee.probationPeriod} Month${employee.probationPeriod > 1 ? 's' : ''})`;
-                                                                })()
-                                                            },
-                                                            { label: 'Overtime', value: employee.overtime ? 'Yes' : 'No' },
-                                                            { label: 'Reporting To', value: reportingAuthorityValueForDisplay }
-                                                        ]
-                                                            .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
-                                                            .map((row, index, arr) => (
-                                                                <div
-                                                                    key={row.label}
-                                                                    className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
-                                                                >
-                                                                    <span className="text-gray-500">{row.label}</span>
-                                                                    <span className="text-gray-500">{row.value}</span>
-                                                                </div>
-                                                            ))}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {activeTab === 'salary' && (
-                                        <div className="space-y-6">
-                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                                                {/* Salary Details Card */}
-                                                <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-                                                    <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                                                        <h3 className="text-xl font-semibold text-gray-800">Salary Details</h3>
-                                                        <button
-                                                            onClick={handleOpenSalaryModal}
-                                                            className="text-blue-600 hover:text-blue-700"
-                                                        >
-                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                            </svg>
-                                                        </button>
-                                                    </div>
-                                                    <div>
-                                                        {[
-                                                            { label: 'Basic Salary', value: employee.basic ? `AED ${employee.basic.toFixed(2)}` : 'AED 0.00' },
-                                                            { label: 'Home Rent Allowance', value: employee.houseRentAllowance ? `AED ${employee.houseRentAllowance.toFixed(1)}` : 'AED 0.0' },
-                                                            {
-                                                                label: 'Vehicle Allowance',
-                                                                value: employee.additionalAllowances?.find(a => a.type?.toLowerCase().includes('vehicle'))?.amount
-                                                                    ? `${employee.additionalAllowances.find(a => a.type?.toLowerCase().includes('vehicle')).amount}`
-                                                                    : '0'
-                                                            },
-                                                            { label: 'Other Allowance', value: employee.otherAllowance ? `AED ${employee.otherAllowance.toFixed(2)}` : 'AED 0.00' },
-                                                            {
-                                                                label: 'Total Salary',
-                                                                value: (() => {
-                                                                    const basic = employee.basic || 0;
-                                                                    const hra = employee.houseRentAllowance || 0;
-                                                                    const other = employee.otherAllowance || 0;
-                                                                    const vehicle = employee.additionalAllowances?.find(a => a.type?.toLowerCase().includes('vehicle'))?.amount || 0;
-                                                                    const additionalTotal = (employee.additionalAllowances || []).reduce((sum, item) => sum + (item.amount || 0), 0);
-                                                                    const total = basic + hra + other + additionalTotal;
-                                                                    return `AED ${total.toFixed(2)}`;
-                                                                })(),
-                                                                isTotal: true
-                                                            }
-                                                        ]
-                                                            .map((row, index, arr) => (
-                                                                <div
-                                                                    key={row.label}
-                                                                    className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''} ${row.isTotal ? 'bg-gray-50 font-semibold' : ''}`}
-                                                                >
-                                                                    <span className="text-gray-500">{row.label}</span>
-                                                                    <span className="text-gray-500">{row.value}</span>
-                                                                </div>
-                                                            ))}
-                                                    </div>
-                                                </div>
-
-                                                {/* Salary Bank Account Card or Add Button */}
-                                                {hasBankDetailsSection() ? (
+                                                {/* Work Details Card - Show only if permission isActive is true */}
+                                                {(isAdmin() || hasPermission('hrm_employees_view_work', 'isActive')) && (
                                                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
                                                         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                                                            <h3 className="text-xl font-semibold text-gray-800">Salary Bank Account</h3>
-                                                            <button
-                                                                onClick={handleOpenBankModal}
-                                                                className="text-blue-600 hover:text-blue-700"
-                                                            >
-                                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                                </svg>
-                                                            </button>
+                                                            <h3 className="text-xl font-semibold text-gray-800">Work Details</h3>
+                                                            {(isAdmin() || hasPermission('hrm_employees_view_work', 'isEdit')) && (
+                                                                <button
+                                                                    onClick={openWorkDetailsModal}
+                                                                    className="text-blue-600 hover:text-blue-700"
+                                                                >
+                                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                    </svg>
+                                                                </button>
+                                                            )}
                                                         </div>
                                                         <div>
                                                             {[
-                                                                { label: 'Bank Name', value: employee.bankName || employee.bank },
-                                                                { label: 'Account Name', value: employee.accountName || employee.bankAccountName },
-                                                                { label: 'Account Number', value: employee.accountNumber || employee.bankAccountNumber },
-                                                                { label: 'IBAN Number', value: employee.ibanNumber },
-                                                                { label: 'SWIFT Code', value: employee.swiftCode || employee.ifscCode || employee.ifsc },
-                                                                { label: 'Other Details (if any)', value: employee.bankOtherDetails || employee.otherBankDetails }
+                                                                { label: 'Department', value: employee.department ? departmentOptions.find(opt => opt.value === employee.department)?.label || employee.department : '—' },
+                                                                { label: 'Designation', value: employee.designation ? (employee.department ? (getDesignationOptions(employee.department).includes(employee.designation) ? employee.designation : employee.designation) : employee.designation) : '—' },
+                                                                {
+                                                                    label: 'Work Status',
+                                                                    value: (() => {
+                                                                        if (!employee.status) return '—';
+                                                                        if (employee.status !== 'Probation' || !employee.probationPeriod) {
+                                                                            return employee.status;
+                                                                        }
+                                                                        return `${employee.status} (${employee.probationPeriod} Month${employee.probationPeriod > 1 ? 's' : ''})`;
+                                                                    })()
+                                                                },
+                                                                { label: 'Overtime', value: employee.overtime ? 'Yes' : 'No' },
+                                                                { label: 'Reporting To', value: reportingAuthorityValueForDisplay }
                                                             ]
                                                                 .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
                                                                 .map((row, index, arr) => (
@@ -4510,14 +4884,138 @@ export default function EmployeeProfilePage() {
                                                                 ))}
                                                         </div>
                                                     </div>
-                                                ) : (
-                                                    <button
-                                                        onClick={handleOpenBankModal}
-                                                        className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-sm w-fit"
-                                                    >
-                                                        Add Salary Bank Account
-                                                        <span className="text-sm leading-none">+</span>
-                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {activeTab === 'salary' && (
+                                        <div className="space-y-6">
+                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                                                {/* Salary Details Card - Show only if permission isActive is true */}
+                                                {(isAdmin() || hasPermission('hrm_employees_view_salary', 'isActive')) && (
+                                                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
+                                                        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                                                            <h3 className="text-xl font-semibold text-gray-800">Salary Details</h3>
+                                                            {hasSalaryDetails() ? (
+                                                                (isAdmin() || hasPermission('hrm_employees_view_salary', 'isEdit')) && (
+                                                                    <button
+                                                                        onClick={handleOpenSalaryModal}
+                                                                        className="text-blue-600 hover:text-blue-700"
+                                                                    >
+                                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                        </svg>
+                                                                    </button>
+                                                                )
+                                                            ) : (
+                                                                (isAdmin() || hasPermission('hrm_employees_view_salary', 'isCreate')) && (
+                                                                    <button
+                                                                        onClick={handleOpenSalaryModal}
+                                                                        className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-sm"
+                                                                    >
+                                                                        Add Salary
+                                                                        <span className="text-sm leading-none">+</span>
+                                                                    </button>
+                                                                )
+                                                            )}
+                                                        </div>
+                                                        <div>
+                                                            {[
+                                                                { label: 'Basic Salary', value: employee.basic ? `AED ${employee.basic.toFixed(2)}` : 'AED 0.00' },
+                                                                { label: 'Home Rent Allowance', value: employee.houseRentAllowance ? `AED ${employee.houseRentAllowance.toFixed(1)}` : 'AED 0.0' },
+                                                                {
+                                                                    label: 'Vehicle Allowance',
+                                                                    value: employee.additionalAllowances?.find(a => a.type?.toLowerCase().includes('vehicle'))?.amount
+                                                                        ? `${employee.additionalAllowances.find(a => a.type?.toLowerCase().includes('vehicle')).amount}`
+                                                                        : '0'
+                                                                },
+                                                                { label: 'Other Allowance', value: employee.otherAllowance ? `AED ${employee.otherAllowance.toFixed(2)}` : 'AED 0.00' },
+                                                                {
+                                                                    label: 'Total Salary',
+                                                                    value: (() => {
+                                                                        const basic = employee.basic || 0;
+                                                                        const hra = employee.houseRentAllowance || 0;
+                                                                        const other = employee.otherAllowance || 0;
+                                                                        const vehicle = employee.additionalAllowances?.find(a => a.type?.toLowerCase().includes('vehicle'))?.amount || 0;
+                                                                        const additionalTotal = (employee.additionalAllowances || []).reduce((sum, item) => sum + (item.amount || 0), 0);
+                                                                        const total = basic + hra + other + additionalTotal;
+                                                                        return `AED ${total.toFixed(2)}`;
+                                                                    })(),
+                                                                    isTotal: true
+                                                                }
+                                                            ]
+                                                                .map((row, index, arr) => (
+                                                                    <div
+                                                                        key={row.label}
+                                                                        className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''} ${row.isTotal ? 'bg-gray-50 font-semibold' : ''}`}
+                                                                    >
+                                                                        <span className="text-gray-500">{row.label}</span>
+                                                                        <span className="text-gray-500">{row.value}</span>
+                                                                    </div>
+                                                                ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Salary Bank Account Card or Add Button - Show only if permission isActive is true */}
+                                                {(isAdmin() || hasPermission('hrm_employees_view_bank', 'isActive')) && (
+                                                    <>
+                                                        {hasBankDetailsSection() ? (
+                                                            <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
+                                                                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                                                                    <h3 className="text-xl font-semibold text-gray-800">Salary Bank Account</h3>
+                                                                    {(isAdmin() || hasPermission('hrm_employees_view_bank', 'isEdit')) && (
+                                                                        <button
+                                                                            onClick={handleOpenBankModal}
+                                                                            className="text-blue-600 hover:text-blue-700"
+                                                                        >
+                                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                            </svg>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                                <div>
+                                                                    {[
+                                                                        { label: 'Bank Name', value: employee.bankName || employee.bank },
+                                                                        { label: 'Account Name', value: employee.accountName || employee.bankAccountName },
+                                                                        { label: 'Account Number', value: employee.accountNumber || employee.bankAccountNumber },
+                                                                        { label: 'IBAN Number', value: employee.ibanNumber },
+                                                                        { label: 'SWIFT Code', value: employee.swiftCode || employee.ifscCode || employee.ifsc },
+                                                                        { label: 'Other Details (if any)', value: employee.bankOtherDetails || employee.otherBankDetails }
+                                                                    ]
+                                                                        .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
+                                                                        .map((row, index, arr) => (
+                                                                            <div
+                                                                                key={row.label}
+                                                                                className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
+                                                                            >
+                                                                                <span className="text-gray-500">{row.label}</span>
+                                                                                <span className="text-gray-500">{row.value}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
+                                                                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                                                                    <h3 className="text-xl font-semibold text-gray-800">Salary Bank Account</h3>
+                                                                    {(isAdmin() || hasPermission('hrm_employees_view_bank', 'isCreate')) && (
+                                                                        <button
+                                                                            onClick={handleOpenBankModal}
+                                                                            className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-sm"
+                                                                        >
+                                                                            Add Bank Account
+                                                                            <span className="text-sm leading-none">+</span>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </>
                                                 )}
                                             </div>
 
@@ -4543,8 +5041,36 @@ export default function EmployeeProfilePage() {
                                             {/* Salary Action Card */}
                                             <div className="mt-6 bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
                                                 {(() => {
-                                                    // Prepare salary history data outside IIFE scope
-                                                    const salaryHistoryData = employee?.salaryHistory || [];
+                                                    // Prepare salary history data - display all entries from history
+                                                    // The initial salary should already be in the history array
+                                                    let salaryHistoryData = employee?.salaryHistory || [];
+
+                                                    // Only add initial salary if it truly doesn't exist in history AND employee has basic/otherAllowance
+                                                    // This is a fallback for employees created before the history tracking was implemented
+                                                    if (employee && (employee.basic || employee.otherAllowance) && salaryHistoryData.length === 0) {
+                                                        // Only add if there's no history at all (legacy employee)
+                                                        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+                                                        const dateOfJoining = employee.dateOfJoining ? new Date(employee.dateOfJoining) : (employee.createdAt ? new Date(employee.createdAt) : new Date());
+                                                        const month = monthNames[dateOfJoining.getMonth()];
+                                                        const firstDayOfMonth = new Date(dateOfJoining.getFullYear(), dateOfJoining.getMonth(), 1);
+                                                        const initialBasic = employee.basic || 0;
+                                                        const initialOther = employee.otherAllowance || 0;
+                                                        const initialTotal = initialBasic + initialOther;
+
+                                                        const initialSalaryEntry = {
+                                                            month: month,
+                                                            fromDate: firstDayOfMonth,
+                                                            toDate: null,
+                                                            basic: initialBasic,
+                                                            otherAllowance: initialOther,
+                                                            totalSalary: initialTotal,
+                                                            createdAt: dateOfJoining,
+                                                            isInitial: true
+                                                        };
+
+                                                        salaryHistoryData = [initialSalaryEntry];
+                                                    }
+
                                                     const sortedHistory = selectedSalaryAction === 'Salary History'
                                                         ? [...salaryHistoryData].sort((a, b) => {
                                                             const dateA = new Date(a.fromDate);
@@ -4596,32 +5122,6 @@ export default function EmployeeProfilePage() {
                                                                     )}
                                                                     {selectedSalaryAction === 'Salary History' && (
                                                                         <>
-                                                                            <button
-                                                                                onClick={() => {
-                                                                                    setEditingSalaryIndex(null);
-                                                                                    setSalaryForm({
-                                                                                        basic: '',
-                                                                                        houseRentAllowance: '',
-                                                                                        otherAllowance: '',
-                                                                                        vehicleAllowance: '',
-                                                                                        fromDate: '',
-                                                                                        toDate: ''
-                                                                                    });
-                                                                                    setSalaryFormErrors({
-                                                                                        basic: '',
-                                                                                        houseRentAllowance: '',
-                                                                                        otherAllowance: '',
-                                                                                        vehicleAllowance: '',
-                                                                                        fromDate: '',
-                                                                                        toDate: ''
-                                                                                    });
-                                                                                    setShowSalaryModal(true);
-                                                                                }}
-                                                                                className="px-5 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors shadow-sm"
-                                                                            >
-                                                                                Add Salary Record
-                                                                                <span className="text-lg leading-none">+</span>
-                                                                            </button>
                                                                             <div className="flex items-center gap-2">
                                                                                 <span className="text-sm text-gray-600">Items per page</span>
                                                                                 <select
@@ -4753,20 +5253,18 @@ export default function EmployeeProfilePage() {
                                                                                                         const entryToEdit = sortedHistory[actualIndex];
                                                                                                         setEditingSalaryIndex(actualIndex);
                                                                                                         setSalaryForm({
+                                                                                                            month: entryToEdit.month || '',
                                                                                                             basic: entryToEdit.basic ? String(entryToEdit.basic) : '',
-                                                                                                            houseRentAllowance: entryToEdit.houseRentAllowance ? String(entryToEdit.houseRentAllowance) : '',
                                                                                                             otherAllowance: entryToEdit.otherAllowance ? String(entryToEdit.otherAllowance) : '',
-                                                                                                            vehicleAllowance: entryToEdit.vehicleAllowance ? String(entryToEdit.vehicleAllowance) : '',
-                                                                                                            fromDate: entryToEdit.fromDate ? new Date(entryToEdit.fromDate).toISOString().split('T')[0] : '',
-                                                                                                            toDate: entryToEdit.toDate ? new Date(entryToEdit.toDate).toISOString().split('T')[0] : ''
+                                                                                                            totalSalary: entryToEdit.totalSalary ? String(entryToEdit.totalSalary) : calculateTotalSalary(
+                                                                                                                entryToEdit.basic ? String(entryToEdit.basic) : '',
+                                                                                                                entryToEdit.otherAllowance ? String(entryToEdit.otherAllowance) : ''
+                                                                                                            )
                                                                                                         });
                                                                                                         setSalaryFormErrors({
+                                                                                                            month: '',
                                                                                                             basic: '',
-                                                                                                            houseRentAllowance: '',
-                                                                                                            otherAllowance: '',
-                                                                                                            vehicleAllowance: '',
-                                                                                                            fromDate: '',
-                                                                                                            toDate: ''
+                                                                                                            otherAllowance: ''
                                                                                                         });
                                                                                                         setShowSalaryModal(true);
                                                                                                     }}
@@ -4870,7 +5368,19 @@ export default function EmployeeProfilePage() {
                                                                     ? employee.maritalStatus.charAt(0).toUpperCase() + employee.maritalStatus.slice(1)
                                                                     : null
                                                             },
-                                                            { label: 'Father’s Name', value: employee.fathersName }
+                                                            { label: 'Father’s Name', value: employee.fathersName },
+                                                            {
+                                                                label: 'Gender',
+                                                                value: employee.gender
+                                                                    ? employee.gender.charAt(0).toUpperCase() + employee.gender.slice(1)
+                                                                    : null
+                                                            },
+                                                            {
+                                                                label: 'Nationality',
+                                                                value: employee.nationality || employee.country
+                                                                    ? getCountryName(employee.nationality || employee.country)
+                                                                    : null
+                                                            }
                                                         ]
                                                             .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
                                                             .map((row, index, arr) => (
@@ -4908,8 +5418,8 @@ export default function EmployeeProfilePage() {
                                                                         ? `${employee.addressLine1}, ${employee.addressLine2}`
                                                                         : employee.addressLine1 || employee.addressLine2
                                                                 },
-                                                                { label: 'State', value: employee.state },
-                                                                { label: 'Country', value: employee.country },
+                                                                { label: 'State', value: getStateName(employee.country, employee.state) },
+                                                                { label: 'Country', value: getCountryName(employee.country) },
                                                                 { label: 'ZIP Code', value: employee.postalCode }
                                                             ]
                                                                 .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
@@ -4949,8 +5459,8 @@ export default function EmployeeProfilePage() {
                                                                         ? `${employee.currentAddressLine1}, ${employee.currentAddressLine2}`
                                                                         : employee.currentAddressLine1 || employee.currentAddressLine2
                                                                 },
-                                                                { label: 'Emirate', value: employee.currentState },
-                                                                { label: 'Country', value: employee.currentCountry },
+                                                                { label: 'Emirate', value: getStateName(employee.currentCountry, employee.currentState) },
+                                                                { label: 'Country', value: getCountryName(employee.currentCountry) },
                                                                 { label: 'ZIP Code', value: employee.currentPostalCode }
                                                             ]
                                                                 .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
@@ -4967,126 +5477,84 @@ export default function EmployeeProfilePage() {
                                                     </div>
                                                 ) : null}
 
-                                                {/* Contact Details Card */}
-                                                {hasContactDetails && (
+                                                {/* Emergency Contact Card - Show only if permission isActive is true AND data exists */}
+                                                {(isAdmin() || hasPermission('hrm_employees_view_emergency', 'isActive')) && hasContactDetails && (
                                                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
                                                         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
                                                             <h3 className="text-xl font-semibold text-gray-800">Emergency Contact</h3>
-                                                            <button
-                                                                onClick={() => handleOpenContactModal()}
-                                                                className="px-4 py-1.5 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors shadow-sm"
-                                                            >
-                                                                Add Emergency Contact
-                                                                <span className="text-base leading-none">+</span>
-                                                            </button>
+                                                            {(isAdmin() || hasPermission('hrm_employees_view_emergency', 'isCreate')) && (
+                                                                <button
+                                                                    onClick={() => handleOpenContactModal()}
+                                                                    className="px-4 py-1.5 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors shadow-sm"
+                                                                >
+                                                                    Add Emergency Contact
+                                                                    <span className="text-base leading-none">+</span>
+                                                                </button>
+                                                            )}
                                                         </div>
                                                         <div>
-                                                            {employee.emergencyContacts?.length ? (
-                                                                employee.emergencyContacts.map((contact, index) => (
-                                                                    <div key={contact._id || index} className="border-b border-gray-100 last:border-b-0">
-                                                                        <div className="flex items-center justify-between px-6 py-3 text-blue-600 text-sm font-semibold">
-                                                                            <span>Contact {index + 1}</span>
-                                                                            <div className="flex items-center gap-3">
-                                                                                <button
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        handleOpenContactModal(contact._id, index);
-                                                                                    }}
-                                                                                    className="text-gray-400 hover:text-blue-600"
-                                                                                >
-                                                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                                                                    </svg>
-                                                                                </button>
-                                                                                <button
-                                                                                    onClick={(e) => {
-                                                                                        e.stopPropagation();
-                                                                                        handleDeleteContact(contact._id, index);
-                                                                                    }}
-                                                                                    disabled={deletingContactId === (contact._id || `legacy-${index}`)}
-                                                                                    className="text-red-500 hover:text-red-600 text-xs font-semibold disabled:opacity-60"
-                                                                                >
-                                                                                    {deletingContactId === (contact._id || `legacy-${index}`) ? 'Removing...' : 'Remove'}
-                                                                                </button>
-                                                                            </div>
+                                                            {(() => {
+                                                                const contacts = getExistingContacts();
+                                                                return contacts.map((contact, contactIndex) => {
+                                                                    const contactFields = [
+                                                                        { label: 'Contact', value: `Contact ${contactIndex + 1}`, isHeader: true },
+                                                                        { label: 'Relation', value: contact.relation ? contact.relation.charAt(0).toUpperCase() + contact.relation.slice(1) : 'Self' },
+                                                                        { label: 'Name', value: contact.name },
+                                                                        { label: 'Phone Number', value: contact.number }
+                                                                    ].filter(field => field.value && field.value.trim() !== '');
+
+                                                                    return contactFields.map((field, fieldIndex, arr) => (
+                                                                        <div
+                                                                            key={`${contact.id || contactIndex}-${field.label}`}
+                                                                            className={`flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600 ${fieldIndex !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
+                                                                        >
+                                                                            {field.isHeader ? (
+                                                                                <>
+                                                                                    <span className="text-gray-800 font-semibold">{field.value}</span>
+                                                                                    <div className="flex items-center gap-3">
+                                                                                        {(isAdmin() || hasPermission('hrm_employees_view_emergency', 'isEdit')) && (
+                                                                                            <button
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    handleOpenContactModal(contact.id, contact.index);
+                                                                                                }}
+                                                                                                className="text-blue-600 hover:text-blue-700"
+                                                                                                title="Edit Contact"
+                                                                                            >
+                                                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                                                                </svg>
+                                                                                            </button>
+                                                                                        )}
+                                                                                        {(isAdmin() || hasPermission('hrm_employees_view_emergency', 'isDelete')) && (
+                                                                                            <button
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    handleDeleteContact(contact.id, contact.index);
+                                                                                                }}
+                                                                                                disabled={deletingContactId === (contact.id || `legacy-${contact.index}`)}
+                                                                                                className="text-red-500 hover:text-red-600 text-xs font-semibold disabled:opacity-60"
+                                                                                            >
+                                                                                                {deletingContactId === (contact.id || `legacy-${contact.index}`) ? 'Removing...' : 'Remove'}
+                                                                                            </button>
+                                                                                        )}
+                                                                                    </div>
+                                                                                </>
+                                                                            ) : (
+                                                                                <>
+                                                                                    <span className="text-gray-500">{field.label}</span>
+                                                                                    <span className="text-gray-800">{field.value}</span>
+                                                                                </>
+                                                                            )}
                                                                         </div>
-                                                                        {[
-                                                                            { label: 'Name', value: contact.name },
-                                                                            { label: 'Phone Number', value: contact.number },
-                                                                            {
-                                                                                label: 'Relation',
-                                                                                value: contact.relation
-                                                                                    ? contact.relation.charAt(0).toUpperCase() + contact.relation.slice(1)
-                                                                                    : null
-                                                                            }
-                                                                        ]
-                                                                            .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
-                                                                            .map((row) => (
-                                                                                <div
-                                                                                    key={`${index}-${row.label}`}
-                                                                                    className="flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600"
-                                                                                >
-                                                                                    <span className="text-gray-500">{row.label}</span>
-                                                                                    <span className="text-gray-500">{row.value}</span>
-                                                                                </div>
-                                                                            ))}
-                                                                    </div>
-                                                                ))
-                                                            ) : (
-                                                                <div className="border-b border-gray-100 last:border-b-0">
-                                                                    <div className="flex items-center justify-between px-6 py-3 text-blue-600 text-sm font-semibold">
-                                                                        <span>Contact 1</span>
-                                                                        <div className="flex items-center gap-3">
-                                                                            <button
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    handleOpenContactModal(null, 0);
-                                                                                }}
-                                                                                className="text-gray-400 hover:text-blue-600"
-                                                                            >
-                                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                                                                </svg>
-                                                                            </button>
-                                                                            <button
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    handleDeleteContact(null, 0);
-                                                                                }}
-                                                                                disabled={deletingContactId === 'legacy-0'}
-                                                                                className="text-red-500 hover:text-red-600 text-xs font-semibold disabled:opacity-60"
-                                                                            >
-                                                                                {deletingContactId === 'legacy-0' ? 'Removing...' : 'Remove'}
-                                                                            </button>
-                                                                        </div>
-                                                                    </div>
-                                                                    {[
-                                                                        { label: 'Name', value: employee.emergencyContactName },
-                                                                        { label: 'Phone Number', value: employee.emergencyContactNumber },
-                                                                        {
-                                                                            label: 'Relation',
-                                                                            value: employee.emergencyContactRelation
-                                                                                ? employee.emergencyContactRelation.charAt(0).toUpperCase() + employee.emergencyContactRelation.slice(1)
-                                                                                : null
-                                                                        }
-                                                                    ]
-                                                                        .filter(row => row.value && row.value !== '—' && row.value.trim() !== '')
-                                                                        .map((row) => (
-                                                                            <div
-                                                                                key={`legacy-${row.label}`}
-                                                                                className="flex items-center justify-between px-6 py-4 text-sm font-medium text-gray-600"
-                                                                            >
-                                                                                <span className="text-gray-500">{row.label}</span>
-                                                                                <span className="text-gray-500">{row.value}</span>
-                                                                            </div>
-                                                                        ))}
-                                                                </div>
-                                                            )}
+                                                                    ));
+                                                                }).flat();
+                                                            })()}
                                                         </div>
                                                     </div>
                                                 )}
+
                                             </div>
 
                                             {/* Action Buttons - Outside the cards */}
@@ -5107,11 +5575,14 @@ export default function EmployeeProfilePage() {
                             </div>
                         </div>
                     )}
+                </div>
+            </div>
 
-                    {/* Image Upload and Crop Modal */}
-                    {showImageModal && (
-                        <>
-                            <style jsx global>{`
+            {/* Image Upload and Crop Modal */}
+            {
+                showImageModal && (
+                    <>
+                        <style jsx global>{`
                                 input[type="range"].vertical-slider {
                                     -webkit-appearance: none;
                                     appearance: none;
@@ -5148,259 +5619,281 @@ export default function EmployeeProfilePage() {
                                     cursor: pointer;
                                 }
                             `}</style>
-                            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                                <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-auto">
-                                    <div className="p-6">
-                                        <div className="flex items-center justify-between mb-4">
-                                            <h2 className="text-xl font-semibold text-gray-800">Crop Profile Picture</h2>
-                                            <button
-                                                onClick={() => {
-                                                    if (!uploading) {
-                                                        setShowImageModal(false);
-                                                        setSelectedImage(null);
-                                                        setImageScale(1);
-                                                        setError('');
-                                                    }
-                                                }}
-                                                disabled={uploading}
-                                                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-                                            >
-                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                                                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                                                </svg>
-                                            </button>
-                                        </div>
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                            <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-auto">
+                                <div className="p-6">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-xl font-semibold text-gray-800">Crop Profile Picture</h2>
+                                        <button
+                                            onClick={() => {
+                                                if (!uploading) {
+                                                    setShowImageModal(false);
+                                                    setSelectedImage(null);
+                                                    setImageScale(1);
+                                                    setError('');
+                                                }
+                                            }}
+                                            disabled={uploading}
+                                            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                                        >
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                                            </svg>
+                                        </button>
+                                    </div>
 
-                                        {selectedImage && (
-                                            <div className="flex gap-6 items-start">
-                                                {/* Image Preview Area with AvatarEditor */}
-                                                <div className="flex-1 flex justify-center">
-                                                    <div className="relative bg-gray-100 rounded-lg p-4" style={{ width: '500px', height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                                        <AvatarEditor
-                                                            ref={avatarEditorRef}
-                                                            image={selectedImage}
-                                                            width={400}
-                                                            height={400}
-                                                            border={0}
-                                                            borderRadius={200}
-                                                            scale={imageScale}
-                                                            rotate={0}
-                                                            color={[0, 0, 0, 0.5]}
-                                                            style={{ width: '100%', height: '100%' }}
-                                                        />
-                                                    </div>
-                                                </div>
-
-                                                {/* Vertical Zoom Slider */}
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <button
-                                                        onClick={() => {
-                                                            if (imageScale < 3) {
-                                                                const newScale = Math.min(3, imageScale + 0.1);
-                                                                setImageScale(newScale);
-                                                            }
-                                                        }}
-                                                        disabled={uploading || imageScale >= 3}
-                                                        className="w-10 h-10 flex items-center justify-center rounded-full border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        title="Zoom In"
-                                                    >
-                                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                            <line x1="12" y1="5" x2="12" y2="19"></line>
-                                                            <line x1="5" y1="12" x2="19" y2="12"></line>
-                                                        </svg>
-                                                    </button>
-
-                                                    <div className="relative flex flex-col items-center">
-                                                        <div
-                                                            className="relative bg-gray-200 rounded-full"
-                                                            style={{
-                                                                height: '200px',
-                                                                width: '4px',
-                                                                position: 'relative'
-                                                            }}
-                                                        >
-                                                            <input
-                                                                type="range"
-                                                                min="1"
-                                                                max="3"
-                                                                step="0.01"
-                                                                value={imageScale}
-                                                                onChange={(e) => {
-                                                                    const newScale = parseFloat(e.target.value);
-                                                                    setImageScale(newScale);
-                                                                }}
-                                                                disabled={uploading}
-                                                                className="absolute vertical-slider cursor-pointer disabled:opacity-50"
-                                                                style={{
-                                                                    width: '200px',
-                                                                    height: '4px',
-                                                                    transform: 'rotate(-90deg)',
-                                                                    transformOrigin: 'center',
-                                                                    left: '-98px',
-                                                                    top: '98px',
-                                                                    background: 'transparent'
-                                                                }}
-                                                            />
-                                                        </div>
-                                                        <div className="mt-2 text-xs text-gray-600 font-medium">
-                                                            {Math.round(imageScale * 100)}%
-                                                        </div>
-                                                    </div>
-
-                                                    <button
-                                                        onClick={() => {
-                                                            if (imageScale > 1) {
-                                                                const newScale = Math.max(1, imageScale - 0.1);
-                                                                setImageScale(newScale);
-                                                            }
-                                                        }}
-                                                        disabled={uploading || imageScale <= 1}
-                                                        className="w-10 h-10 flex items-center justify-center rounded-full border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        title="Zoom Out"
-                                                    >
-                                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                            <line x1="5" y1="12" x2="19" y2="12"></line>
-                                                        </svg>
-                                                    </button>
-                                                </div>
-
-                                                {/* Controls */}
-                                                <div className="flex flex-col gap-4 w-48">
-                                                    {error && (
-                                                        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                                                            {error}
-                                                        </div>
-                                                    )}
-
-                                                    <div className="flex flex-col gap-2">
-                                                        <button
-                                                            onClick={() => {
-                                                                if (!uploading) {
-                                                                    const input = document.createElement('input');
-                                                                    input.type = 'file';
-                                                                    input.accept = 'image/*';
-                                                                    input.onchange = handleFileSelect;
-                                                                    input.click();
-                                                                }
-                                                            }}
-                                                            disabled={uploading}
-                                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        >
-                                                            Change Image
-                                                        </button>
-                                                        <button
-                                                            onClick={handleUploadImage}
-                                                            disabled={uploading || !selectedImage}
-                                                            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        >
-                                                            {uploading ? 'Uploading...' : 'Save & Upload'}
-                                                        </button>
-                                                    </div>
+                                    {selectedImage && (
+                                        <div className="flex gap-6 items-start">
+                                            {/* Image Preview Area with AvatarEditor */}
+                                            <div className="flex-1 flex justify-center">
+                                                <div className="relative bg-gray-100 rounded-lg p-4" style={{ width: '500px', height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                    <AvatarEditor
+                                                        ref={avatarEditorRef}
+                                                        image={selectedImage}
+                                                        width={400}
+                                                        height={400}
+                                                        border={0}
+                                                        borderRadius={200}
+                                                        scale={imageScale}
+                                                        rotate={0}
+                                                        color={[0, 0, 0, 0.5]}
+                                                        style={{ width: '100%', height: '100%' }}
+                                                    />
                                                 </div>
                                             </div>
-                                        )}
-                                    </div>
+
+                                            {/* Vertical Zoom Slider */}
+                                            <div className="flex flex-col items-center gap-2">
+                                                <button
+                                                    onClick={() => {
+                                                        if (imageScale < 3) {
+                                                            const newScale = Math.min(3, imageScale + 0.1);
+                                                            setImageScale(newScale);
+                                                        }
+                                                    }}
+                                                    disabled={uploading || imageScale >= 3}
+                                                    className="w-10 h-10 flex items-center justify-center rounded-full border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    title="Zoom In"
+                                                >
+                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                                    </svg>
+                                                </button>
+
+                                                <div className="relative flex flex-col items-center">
+                                                    <div
+                                                        className="relative bg-gray-200 rounded-full"
+                                                        style={{
+                                                            height: '200px',
+                                                            width: '4px',
+                                                            position: 'relative'
+                                                        }}
+                                                    >
+                                                        <input
+                                                            type="range"
+                                                            min="1"
+                                                            max="3"
+                                                            step="0.01"
+                                                            value={imageScale}
+                                                            onChange={(e) => {
+                                                                const newScale = parseFloat(e.target.value);
+                                                                setImageScale(newScale);
+                                                            }}
+                                                            disabled={uploading}
+                                                            className="absolute vertical-slider cursor-pointer disabled:opacity-50"
+                                                            style={{
+                                                                width: '200px',
+                                                                height: '4px',
+                                                                transform: 'rotate(-90deg)',
+                                                                transformOrigin: 'center',
+                                                                left: '-98px',
+                                                                top: '98px',
+                                                                background: 'transparent'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                    <div className="mt-2 text-xs text-gray-600 font-medium">
+                                                        {Math.round(imageScale * 100)}%
+                                                    </div>
+                                                </div>
+
+                                                <button
+                                                    onClick={() => {
+                                                        if (imageScale > 1) {
+                                                            const newScale = Math.max(1, imageScale - 0.1);
+                                                            setImageScale(newScale);
+                                                        }
+                                                    }}
+                                                    disabled={uploading || imageScale <= 1}
+                                                    className="w-10 h-10 flex items-center justify-center rounded-full border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    title="Zoom Out"
+                                                >
+                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                                    </svg>
+                                                </button>
+                                            </div>
+
+                                            {/* Controls */}
+                                            <div className="flex flex-col gap-4 w-48">
+                                                {error && (
+                                                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                                                        {error}
+                                                    </div>
+                                                )}
+
+                                                <div className="flex flex-col gap-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            if (!uploading) {
+                                                                const input = document.createElement('input');
+                                                                input.type = 'file';
+                                                                input.accept = 'image/*';
+                                                                input.onchange = handleFileSelect;
+                                                                input.click();
+                                                            }
+                                                        }}
+                                                        disabled={uploading}
+                                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                        Change Image
+                                                    </button>
+                                                    <button
+                                                        onClick={handleUploadImage}
+                                                        disabled={uploading || !selectedImage}
+                                                        className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                        {uploading ? 'Uploading...' : 'Save & Upload'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                        </>
-                    )}
+                        </div>
+                    </>
+                )
+            }
 
-                    {/* Edit Basic Details Modal - Only show when on Basic Details tab */}
-                    {showEditModal && activeTab === 'basic' && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={() => {
-                                if (!updating) {
-                                    setShowEditModal(false);
-                                    setEditFormErrors({});
-                                }
-                            }}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Basic Details</h3>
-                                    <button
-                                        onClick={() => {
-                                            if (!updating) {
-                                                setShowEditModal(false);
-                                                setEditFormErrors({});
-                                            }
-                                        }}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 pr-2 max-h-[70vh] overflow-y-auto modal-scroll">
-                                    <div className="space-y-3">
-                                        {[
-                                            { label: 'Employee ID', field: 'employeeId', type: 'text', readOnly: true },
-                                            { label: 'Email', field: 'email', type: 'email', required: true },
-                                            { label: 'Contact Number', field: 'contactNumber', type: 'phone', required: true },
-                                            { label: 'Date of Birth', field: 'dateOfBirth', type: 'date', required: false, placeholder: 'mm/dd/yyyy' },
-                                            {
-                                                label: 'Marital Status',
-                                                field: 'maritalStatus',
-                                                type: 'select',
-                                                required: false,
-                                                options: [
-                                                    { value: '', label: 'Select Marital Status' },
-                                                    { value: 'single', label: 'Single' },
-                                                    { value: 'married', label: 'Married' },
-                                                    { value: 'divorced', label: 'Divorced' },
-                                                    { value: 'widowed', label: 'Widowed' }
-                                                ]
-                                            },
-                                            { label: 'Father\'s Name', field: 'fathersName', type: 'text', required: false },
-                                            {
-                                                label: 'Gender', field: 'gender', type: 'select', required: true, options: [
-                                                    { value: '', label: 'Select Gender' },
-                                                    { value: 'male', label: 'Male' },
-                                                    { value: 'female', label: 'Female' },
-                                                    { value: 'other', label: 'Other' }
-                                                ]
-                                            },
-                                            { label: 'Nationality', field: 'nationality', type: 'text', required: false }
-                                        ].map((input) => (
-                                            <div key={input.field} className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">
-                                                    {input.label} {input.required && <span className="text-red-500">*</span>}
-                                                </label>
-                                                {input.type === 'phone' ? (
-                                                    <div className="w-full md:flex-1">
-                                                        <PhoneInput
-                                                            country={DEFAULT_PHONE_COUNTRY}
-                                                            value={editForm[input.field]}
-                                                            onChange={(value, country) => handleEditChange(input.field, value, country)}
-                                                            enableSearch
-                                                            specialLabel=""
-                                                            inputStyle={{
-                                                                width: '100%',
-                                                                height: '42px',
-                                                                borderRadius: '0.75rem',
-                                                                borderColor: editFormErrors[input.field] ? '#ef4444' : '#E5E7EB'
-                                                            }}
-                                                            buttonStyle={{
-                                                                borderTopLeftRadius: '0.75rem',
-                                                                borderBottomLeftRadius: '0.75rem',
-                                                                borderColor: editFormErrors[input.field] ? '#ef4444' : '#E5E7EB',
-                                                                backgroundColor: '#fff'
-                                                            }}
-                                                            dropdownStyle={{ borderRadius: '0.75rem' }}
-                                                            placeholder="Enter contact number"
-                                                            disabled={updating}
-                                                        />
-                                                        {editFormErrors[input.field] && (
-                                                            <p className="text-xs text-red-500 mt-1">{editFormErrors[input.field]}</p>
-                                                        )}
-                                                    </div>
-                                                ) : input.type === 'select' ? (
+            {/* Edit Basic Details Modal - Only show when on Basic Details tab */}
+            {
+                showEditModal && activeTab === 'basic' && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={() => {
+                            if (!updating) {
+                                setShowEditModal(false);
+                                setEditFormErrors({});
+                            }
+                        }}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">Basic Details</h3>
+                                <button
+                                    onClick={() => {
+                                        if (!updating) {
+                                            setShowEditModal(false);
+                                            setEditFormErrors({});
+                                        }
+                                    }}
+                                    className="absolute right-0 text-gray-400 hover:text-gray-600"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 pr-2 max-h-[70vh] overflow-y-auto modal-scroll">
+                                <div className="space-y-3">
+                                    {[
+                                        { label: 'Employee ID', field: 'employeeId', type: 'text', readOnly: true },
+                                        { label: 'Email', field: 'email', type: 'email', required: true },
+                                        { label: 'Contact Number', field: 'contactNumber', type: 'phone', required: true },
+                                        { label: 'Date of Birth', field: 'dateOfBirth', type: 'date', required: true, placeholder: 'mm/dd/yyyy' },
+                                        {
+                                            label: 'Marital Status',
+                                            field: 'maritalStatus',
+                                            type: 'select',
+                                            required: true,
+                                            options: [
+                                                { value: '', label: 'Select Marital Status' },
+                                                { value: 'single', label: 'Single' },
+                                                { value: 'married', label: 'Married' },
+                                                { value: 'divorced', label: 'Divorced' },
+                                                { value: 'widowed', label: 'Widowed' }
+                                            ]
+                                        },
+                                        { label: 'Father\'s Name', field: 'fathersName', type: 'text', required: true },
+                                        {
+                                            label: 'Gender', field: 'gender', type: 'select', required: true, options: [
+                                                { value: '', label: 'Select Gender' },
+                                                { value: 'male', label: 'Male' },
+                                                { value: 'female', label: 'Female' },
+                                                { value: 'other', label: 'Other' }
+                                            ]
+                                        },
+                                        {
+                                            label: 'Nationality',
+                                            field: 'nationality',
+                                            type: 'select',
+                                            required: true,
+                                            options: [
+                                                { value: '', label: 'Select Nationality' },
+                                                ...getAllCountriesOptions()
+                                            ]
+                                        }
+                                    ].map((input) => (
+                                        <div key={input.field} className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
+                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">
+                                                {input.label} {input.required && <span className="text-red-500">*</span>}
+                                            </label>
+                                            {input.type === 'phone' ? (
+                                                <div className="w-full md:flex-1">
+                                                    <PhoneInput
+                                                        country={DEFAULT_PHONE_COUNTRY}
+                                                        value={editForm[input.field]}
+                                                        onChange={(value, country) => handleEditChange(input.field, value, country)}
+                                                        enableSearch
+                                                        specialLabel=""
+                                                        inputStyle={{
+                                                            width: '100%',
+                                                            height: '42px',
+                                                            borderRadius: '0.75rem',
+                                                            borderColor: editFormErrors[input.field] ? '#ef4444' : '#E5E7EB'
+                                                        }}
+                                                        buttonStyle={{
+                                                            borderTopLeftRadius: '0.75rem',
+                                                            borderBottomLeftRadius: '0.75rem',
+                                                            borderColor: editFormErrors[input.field] ? '#ef4444' : '#E5E7EB',
+                                                            backgroundColor: '#fff'
+                                                        }}
+                                                        dropdownStyle={{ borderRadius: '0.75rem' }}
+                                                        placeholder="Enter contact number"
+                                                        disabled={updating}
+                                                    />
+                                                    {editFormErrors[input.field] && (
+                                                        <p className="text-xs text-red-500 mt-1">{editFormErrors[input.field]}</p>
+                                                    )}
+                                                </div>
+                                            ) : input.type === 'select' ? (
+                                                <div className="w-full md:flex-1 flex flex-col gap-1">
                                                     <select
                                                         value={editForm[input.field]}
-                                                        onChange={(e) => handleEditChange(input.field, e.target.value)}
-                                                        className={`w-full md:flex-1 h-10 px-3 rounded-xl border ${editFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                        onChange={(e) => {
+                                                            handleEditChange(input.field, e.target.value);
+                                                            // Clear error when user selects
+                                                            if (editFormErrors[input.field]) {
+                                                                setEditFormErrors(prev => {
+                                                                    const updated = { ...prev };
+                                                                    delete updated[input.field];
+                                                                    return updated;
+                                                                });
+                                                            }
+                                                        }}
+                                                        className={`w-full h-10 px-3 rounded-xl border ${editFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
                                                         disabled={updating}
                                                     >
                                                         {input.options.map((option) => (
@@ -5409,294 +5902,175 @@ export default function EmployeeProfilePage() {
                                                             </option>
                                                         ))}
                                                     </select>
-                                                ) : (
-                                                    <input
-                                                        type={input.type}
-                                                        value={editForm[input.field]}
-                                                        onChange={(e) => handleEditChange(input.field, e.target.value)}
-                                                        className={`w-full md:flex-1 h-10 px-3 rounded-xl border ${editFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
-                                                        disabled={updating || input.readOnly}
-                                                        readOnly={input.readOnly}
-                                                    />
-                                                )}
-                                                {editFormErrors[input.field] && input.type !== 'phone' && (
-                                                    <p className="text-xs text-red-500 mt-1 w-full md:col-span-2">{editFormErrors[input.field]}</p>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 px-4 pt-4 border-t border-gray-100">
-                                    <button
-                                        onClick={() => {
-                                            if (!updating) {
-                                                setShowEditModal(false);
-                                                setEditFormErrors({});
-                                            }
-                                        }}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors disabled:opacity-50"
-                                        disabled={updating}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={() => setConfirmUpdateOpen(true)}
-                                        className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
-                                        disabled={updating}
-                                    >
-                                        {updating ? 'Updating...' : 'Update'}
-                                    </button>
+                                                    {editFormErrors[input.field] && (
+                                                        <p className="text-xs text-red-500 mt-1">{editFormErrors[input.field]}</p>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <input
+                                                    type={input.type}
+                                                    value={editForm[input.field]}
+                                                    onChange={(e) => {
+                                                        let value = e.target.value;
+                                                        // Restrict input based on field type
+                                                        if (input.field === 'fathersName') {
+                                                            // Only allow letters and spaces (no numbers or special characters)
+                                                            value = value.replace(/[^A-Za-z\s]/g, '');
+                                                        }
+                                                        handleEditChange(input.field, value);
+                                                    }}
+                                                    onInput={(e) => {
+                                                        // Additional real-time filtering for string fields
+                                                        if (input.field === 'fathersName') {
+                                                            // Only allow letters and spaces
+                                                            e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                                        }
+                                                    }}
+                                                    className={`w-full md:flex-1 h-10 px-3 rounded-xl border ${editFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                    disabled={updating || input.readOnly}
+                                                    readOnly={input.readOnly}
+                                                />
+                                            )}
+                                            {editFormErrors[input.field] && input.type !== 'phone' && (
+                                                <p className="text-xs text-red-500 mt-1 w-full md:col-span-2">{editFormErrors[input.field]}</p>
+                                            )}
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
-                        </div>
-                    )}
-
-                    {/* Confirm Update Dialog */}
-                    <AlertDialog open={confirmUpdateOpen} onOpenChange={(open) => !updating && setConfirmUpdateOpen(open)}>
-                        <AlertDialogContent>
-                            <AlertDialogHeader>
-                                <AlertDialogTitle>Update basic details?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                    Are you sure you want to save these changes to the employee&apos;s basic details?
-                                </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                                <AlertDialogCancel disabled={updating}>Cancel</AlertDialogCancel>
-                                <AlertDialogAction
+                            <div className="flex items-center justify-end gap-4 px-4 pt-4 border-t border-gray-100">
+                                <button
                                     onClick={() => {
-                                        setConfirmUpdateOpen(false);
-                                        handleUpdateEmployee();
+                                        if (!updating) {
+                                            setShowEditModal(false);
+                                            setEditFormErrors({});
+                                        }
                                     }}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors disabled:opacity-50"
                                     disabled={updating}
                                 >
-                                    {updating ? 'Updating...' : 'Confirm'}
-                                </AlertDialogAction>
-                            </AlertDialogFooter>
-                        </AlertDialogContent>
-                    </AlertDialog>
-
-                    {/* Result Dialog */}
-                    <AlertDialog open={alertDialog.open} onOpenChange={(open) => setAlertDialog((prev) => ({ ...prev, open }))}>
-                        <AlertDialogContent className="sm:max-w-[425px] rounded-[22px] border-gray-200">
-                            <AlertDialogHeader>
-                                <AlertDialogTitle className="text-[22px] font-semibold text-gray-800">{alertDialog.title}</AlertDialogTitle>
-                                <AlertDialogDescription className="text-sm text-[#6B6B6B] mt-2">
-                                    {alertDialog.description}
-                                </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter className="mt-4">
-                                <AlertDialogAction
-                                    onClick={() => setAlertDialog((prev) => ({ ...prev, open: false }))}
-                                    className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors"
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => setConfirmUpdateOpen(true)}
+                                    className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
+                                    disabled={updating}
                                 >
-                                    OK
-                                </AlertDialogAction>
-                            </AlertDialogFooter>
-                        </AlertDialogContent>
-                    </AlertDialog>
+                                    {updating ? 'Updating...' : 'Update'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
 
-                    {/* Work Details Modal */}
-                    {showWorkDetailsModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={() => !updatingWorkDetails && setShowWorkDetailsModal(false)}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Work Details</h3>
-                                    <button
-                                        onClick={() => !updatingWorkDetails && setShowWorkDetailsModal(false)}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 pr-2 max-h-[70vh] overflow-y-auto modal-scroll">
-                                    <div className="space-y-3">
-                                        {/* Department */}
-                                        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">Department</label>
-                                            <select
-                                                value={workDetailsForm.department || ''}
-                                                onChange={(e) => handleWorkDetailsChange('department', e.target.value)}
-                                                className="w-full md:flex-1 h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                disabled={updatingWorkDetails}
-                                            >
-                                                <option value="">Select Department</option>
-                                                {departmentOptions.map((option) => (
-                                                    <option key={option.value} value={option.value}>
-                                                        {option.label}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
+            {/* Confirm Update Dialog */}
+            <AlertDialog open={confirmUpdateOpen} onOpenChange={(open) => !updating && setConfirmUpdateOpen(open)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Update basic details?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Are you sure you want to save these changes to the employee&apos;s basic details?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={updating}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                setConfirmUpdateOpen(false);
+                                handleUpdateEmployee();
+                            }}
+                            disabled={updating}
+                        >
+                            {updating ? 'Updating...' : 'Confirm'}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
-                                        {/* Designation */}
-                                        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">Designation</label>
-                                            <select
-                                                value={workDetailsForm.designation || ''}
-                                                onChange={(e) => handleWorkDetailsChange('designation', e.target.value)}
-                                                className="w-full md:flex-1 h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                disabled={updatingWorkDetails}
-                                            >
-                                                <option value="">Select Designation</option>
-                                                {designationOptions.map((option) => (
-                                                    <option key={option.value} value={option.value}>
-                                                        {option.label}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
+            {/* Result Dialog */}
+            <AlertDialog open={alertDialog.open} onOpenChange={(open) => setAlertDialog((prev) => ({ ...prev, open }))}>
+                <AlertDialogContent className="sm:max-w-[425px] rounded-[22px] border-gray-200">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="text-[22px] font-semibold text-gray-800">{alertDialog.title}</AlertDialogTitle>
+                        <AlertDialogDescription className="text-sm text-[#6B6B6B] mt-2">
+                            {alertDialog.description}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="mt-4">
+                        <AlertDialogAction
+                            onClick={() => setAlertDialog((prev) => ({ ...prev, open: false }))}
+                            className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors"
+                        >
+                            OK
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
-                                        {/* Work Status */}
-                                        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">Work Status</label>
-                                            <select
-                                                value={workDetailsForm.status || 'Probation'}
-                                                onChange={(e) => handleWorkDetailsChange('status', e.target.value)}
-                                                className="w-full md:flex-1 h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                disabled={updatingWorkDetails}
-                                            >
-                                                {statusOptions.map((option) => (
-                                                    <option
-                                                        key={option.value}
-                                                        value={option.value}
-                                                        disabled={option.value === 'Notice' && (employee?.status === 'Probation')}
-                                                    >
-                                                        {option.label}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
+            {/* Work Details Modal */}
+            <WorkDetailsModal
+                isOpen={showWorkDetailsModal}
+                onClose={() => setShowWorkDetailsModal(false)}
+                workDetailsForm={workDetailsForm}
+                setWorkDetailsForm={setWorkDetailsForm}
+                workDetailsErrors={workDetailsErrors}
+                setWorkDetailsErrors={setWorkDetailsErrors}
+                updatingWorkDetails={updatingWorkDetails}
+                onUpdate={handleUpdateWorkDetails}
+                employee={employee}
+                reportingAuthorityOptions={reportingAuthorityOptions}
+                reportingAuthorityLoading={reportingAuthorityLoading}
+                reportingAuthorityError={reportingAuthorityError}
+            />
 
-                                        {/* Probation Period - only show when status is Probation */}
-                                        {workDetailsForm.status === 'Probation' && (
-                                            <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">
-                                                    Probation Period (Months)
-                                                    <span className="text-red-500 ml-1">*</span>
-                                                </label>
-                                                <div className="w-full md:flex-1 flex flex-col gap-1">
+            {/* Passport Modal */}
+            {
+                showPassportModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleClosePassportModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">Passport Details</h3>
+                                <button
+                                    onClick={handleClosePassportModal}
+                                    className="absolute right-0 text-gray-400 hover:text-gray-600"
+                                    disabled={savingPassport}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                <div className="flex flex-col gap-3">
+                                    {passportFieldConfig.map((input) => (
+                                        <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                                {input.label} {input.required && <span className="text-red-500">*</span>}
+                                            </label>
+                                            <div className="w-full md:flex-1 flex flex-col gap-1">
+                                                {input.type === 'select' ? (
                                                     <select
-                                                        value={workDetailsForm.probationPeriod || ''}
+                                                        value={passportForm[input.field]}
                                                         onChange={(e) => {
-                                                            handleWorkDetailsChange('probationPeriod', e.target.value ? parseInt(e.target.value) : null);
-                                                            // Clear error when user selects a value
-                                                            if (workDetailsErrors.probationPeriod) {
-                                                                setWorkDetailsErrors(prev => {
-                                                                    const newErrors = { ...prev };
-                                                                    delete newErrors.probationPeriod;
-                                                                    return newErrors;
-                                                                });
+                                                            handlePassportChange(input.field, e.target.value);
+                                                            if (passportErrors[input.field]) {
+                                                                setPassportErrors(prev => ({ ...prev, [input.field]: '' }));
                                                             }
                                                         }}
-                                                        className={`w-full h-10 px-3 rounded-xl border ${workDetailsErrors.probationPeriod ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
-                                                        disabled={updatingWorkDetails}
+                                                        className={`w-full h-10 px-3 rounded-xl border ${passportErrors[input.field] ? 'border-red-400 ring-2 ring-red-400' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                        disabled={savingPassport}
                                                     >
-                                                        <option value="">Select Probation Period</option>
-                                                        {[1, 2, 3, 4, 5, 6].map((month) => (
-                                                            <option key={month} value={month}>
-                                                                {month} Month{month > 1 ? 's' : ''}
+                                                        <option value="">Select {input.label}</option>
+                                                        {input.options?.map((option) => (
+                                                            <option key={option.value} value={option.value}>
+                                                                {option.label}
                                                             </option>
                                                         ))}
                                                     </select>
-                                                    {workDetailsErrors.probationPeriod && (
-                                                        <span className="text-xs text-red-500">{workDetailsErrors.probationPeriod}</span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* Overtime Toggle */}
-                                        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">Overtime</label>
-                                            <div className="w-full md:flex-1 flex items-center gap-3">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleWorkDetailsChange('overtime', !workDetailsForm.overtime)}
-                                                    disabled={updatingWorkDetails}
-                                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${workDetailsForm.overtime ? 'bg-blue-600' : 'bg-gray-300'}`}
-                                                >
-                                                    <span
-                                                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${workDetailsForm.overtime ? 'translate-x-6' : 'translate-x-1'}`}
-                                                    />
-                                                </button>
-                                                <span className="text-sm text-gray-700">{workDetailsForm.overtime ? 'Yes' : 'No'}</span>
-                                            </div>
-                                        </div>
-
-                                        {/* Reporting To */}
-                                        <div className="flex flex-col md:flex-row md:items-center gap-3 border border-gray-100 rounded-2xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3">Reporting To</label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <select
-                                                    value={workDetailsForm.reportingAuthority || ''}
-                                                    onChange={(e) => handleWorkDetailsChange('reportingAuthority', e.target.value)}
-                                                    className="w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                    disabled={updatingWorkDetails || reportingAuthorityLoading}
-                                                >
-                                                    <option value="">{reportingAuthorityLoading ? 'Loading...' : 'Select reporting to'}</option>
-                                                    {reportingAuthorityOptions.map((option) => (
-                                                        <option key={option.value} value={option.value}>
-                                                            {option.label}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                                {reportingAuthorityError && (
-                                                    <span className="text-xs text-red-500">{reportingAuthorityError}</span>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 px-4 pt-4 border-t border-gray-100">
-                                    <button
-                                        onClick={() => !updatingWorkDetails && setShowWorkDetailsModal(false)}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors disabled:opacity-50"
-                                        disabled={updatingWorkDetails}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleUpdateWorkDetails}
-                                        className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
-                                        disabled={updatingWorkDetails}
-                                    >
-                                        {updatingWorkDetails ? 'Updating...' : 'Update'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Passport Modal */}
-                    {showPassportModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleClosePassportModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Passport Details</h3>
-                                    <button
-                                        onClick={handleClosePassportModal}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                        disabled={savingPassport || extractingPassport}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    <div className="flex flex-col gap-3">
-                                        {passportFieldConfig.map((input) => (
-                                            <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                    {input.label} {input.required && <span className="text-red-500">*</span>}
-                                                </label>
-                                                <div className="w-full md:flex-1 flex flex-col gap-1">
+                                                ) : (
                                                     <input
                                                         type={input.type}
                                                         value={passportForm[input.field]}
@@ -5708,47 +6082,185 @@ export default function EmployeeProfilePage() {
                                                         }}
                                                         className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${passportErrors[input.field] ? 'ring-2 ring-red-400 border-red-400' : ''
                                                             }`}
-                                                        disabled={savingPassport || extractingPassport || input.readOnly}
+                                                        disabled={savingPassport || input.readOnly}
                                                         readOnly={input.readOnly}
                                                     />
-                                                    {passportErrors[input.field] && (
-                                                        <p className="text-xs text-red-500">{passportErrors[input.field]}</p>
+                                                )}
+                                                {passportErrors[input.field] && (
+                                                    <p className="text-xs text-red-500">{passportErrors[input.field]}</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                        <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                            Passport Copy <span className="text-red-500">*</span>
+                                        </label>
+                                        <div className="w-full md:flex-1 flex flex-col gap-2">
+                                            <input
+                                                ref={fileInputRef}
+                                                type="file"
+                                                accept=".jpeg,.jpg,.pdf"
+                                                onChange={handlePassportFileChange}
+                                                className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:text-[#3B82F6] file:font-medium file:px-4 file:py-2 ${passportErrors.file ? 'ring-2 ring-red-400 border-red-400' : ''
+                                                    }`}
+                                                disabled={savingPassport}
+                                            />
+                                            {passportErrors.file && (
+                                                <p className="text-xs text-red-500">{passportErrors.file}</p>
+                                            )}
+                                            {passportForm.file && (
+                                                <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
+                                                    <div className="flex items-center gap-2">
+                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                            <path d="M20 6L9 17l-5-5"></path>
+                                                        </svg>
+                                                        <span>{passportForm.file.name}</span>
+                                                    </div>
+                                                    {employee?.passportDetails?.document?.data && (
+                                                        <button
+                                                            onClick={() => {
+                                                                setViewingDocument({
+                                                                    data: employee.passportDetails.document.data,
+                                                                    name: employee.passportDetails.document.name || 'Passport Document',
+                                                                    mimeType: employee.passportDetails.document.mimeType || 'application/pdf'
+                                                                });
+                                                                setShowDocumentViewer(true);
+                                                            }}
+                                                            className="text-blue-600 hover:text-blue-700 text-xs font-medium"
+                                                        >
+                                                            View
+                                                        </button>
                                                     )}
                                                 </div>
-                                            </div>
-                                        ))}
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                            )}
+                                            {passportScanError && (
+                                                <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+                                                    <p className="text-xs text-red-600">{passportScanError}</p>
+                                                </div>
+                                            )}
+                                            <p className="text-xs text-gray-500">Upload file in JPEG / PDF format.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex items-center justify-end gap-4 px-6 py-4 border-t border-gray-100">
+                                <button
+                                    onClick={handleClosePassportModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors"
+                                    disabled={savingPassport}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handlePassportSubmit}
+                                    className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
+                                    disabled={savingPassport}
+                                >
+                                    {savingPassport ? 'Updating...' : 'Update'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Visa Modal */}
+            {
+                showVisaModal && selectedVisaType && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleCloseVisaModal}></div>
+                        <div className="relative w-full max-w-4xl bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] max-h-[80vh] flex flex-col">
+                            <div className="flex flex-col gap-2 border-b border-gray-200 p-6 md:flex-row md:items-center md:justify-between">
+                                <div>
+                                    <h3 className="text-2xl font-semibold text-gray-800">Visa Requirements</h3>
+                                    <p className="text-sm text-gray-500">
+                                        {selectedVisaLabel ? `${selectedVisaLabel} details` : 'Upload visa details'}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={handleCloseVisaModal}
+                                    disabled={savingVisa}
+                                    className={`text-gray-400 hover:text-gray-600 self-start md:self-auto ${savingVisa ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                                <div className="space-y-3">
+                                    {[
+                                        { label: 'Visa Number', field: 'number', type: 'text', required: true },
+                                        { label: 'Issue Date', field: 'issueDate', type: 'date', required: true },
+                                        { label: 'Expiry Date', field: 'expiryDate', type: 'date', required: true },
+                                        ...(selectedVisaType === 'employment' || selectedVisaType === 'spouse'
+                                            ? [{ label: 'Sponsor (Company / Individual)', field: 'sponsor', type: 'text', required: true }]
+                                            : []),
+                                        { label: 'Visa Copy Upload', field: 'file', type: 'file', required: true }
+                                    ].map((input) => (
+                                        <div key={`${selectedVisaType}-${input.field}`} className="flex flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
                                             <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                Passport Copy <span className="text-red-500">*</span>
+                                                {input.label} {input.required && <span className="text-red-500">*</span>}
                                             </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-2">
-                                                <input
-                                                    ref={fileInputRef}
-                                                    type="file"
-                                                    accept=".jpeg,.jpg,.pdf"
-                                                    onChange={handlePassportFileChange}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:text-[#3B82F6] file:font-medium file:px-4 file:py-2 ${passportErrors.file ? 'ring-2 ring-red-400 border-red-400' : ''
-                                                        }`}
-                                                    disabled={savingPassport || extractingPassport}
-                                                />
-                                                {passportErrors.file && (
-                                                    <p className="text-xs text-red-500">{passportErrors.file}</p>
+                                            <div className="w-full md:flex-1 flex flex-col gap-1">
+                                                {input.type === 'file' ? (
+                                                    <input
+                                                        type="file"
+                                                        accept=".pdf,.jpg,.jpeg,.png"
+                                                        onChange={(e) => handleVisaFileChange(selectedVisaType, e.target.files?.[0] || null)}
+                                                        className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:text-[#3B82F6] file:font-medium file:px-4 file:py-2 ${visaErrors[selectedVisaType]?.file ? 'ring-2 ring-red-400 border-red-400' : ''
+                                                            }`}
+                                                        disabled={savingVisa}
+                                                    />
+                                                ) : (
+                                                    <input
+                                                        type={input.type}
+                                                        value={visaForms[selectedVisaType]?.[input.field] || ''}
+                                                        onChange={(e) => {
+                                                            let value = e.target.value;
+                                                            // Apply input restrictions
+                                                            if (input.field === 'number') {
+                                                                // Only alphanumeric, no special characters
+                                                                value = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                                                            } else if (input.field === 'sponsor') {
+                                                                // Only letters, numbers, and spaces
+                                                                value = value.replace(/[^A-Za-z0-9\s]/g, '');
+                                                            }
+                                                            handleVisaFieldChange(selectedVisaType, input.field, value);
+                                                        }}
+                                                        onInput={(e) => {
+                                                            // Additional real-time filtering
+                                                            if (input.field === 'number') {
+                                                                e.target.value = e.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                                                            } else if (input.field === 'sponsor') {
+                                                                e.target.value = e.target.value.replace(/[^A-Za-z0-9\s]/g, '');
+                                                            }
+                                                        }}
+                                                        className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${visaErrors[selectedVisaType]?.[input.field] ? 'ring-2 ring-red-400 border-red-400' : ''
+                                                            }`}
+                                                        disabled={savingVisa}
+                                                    />
                                                 )}
-                                                {passportForm.file && (
+                                                {visaErrors[selectedVisaType]?.[input.field] && (
+                                                    <p className="text-xs text-red-500">{visaErrors[selectedVisaType][input.field]}</p>
+                                                )}
+                                                {input.field === 'file' && (visaForms[selectedVisaType].file || visaForms[selectedVisaType].fileName) && (
                                                     <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
                                                         <div className="flex items-center gap-2">
                                                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                                                 <path d="M20 6L9 17l-5-5"></path>
                                                             </svg>
-                                                            <span>{passportForm.file.name}</span>
+                                                            <span>{visaForms[selectedVisaType].file?.name || visaForms[selectedVisaType].fileName}</span>
                                                         </div>
-                                                        {employee?.passportDetails?.document?.data && (
+                                                        {employee?.visaDetails?.[selectedVisaType]?.document?.data && (
                                                             <button
                                                                 onClick={() => {
                                                                     setViewingDocument({
-                                                                        data: employee.passportDetails.document.data,
-                                                                        name: employee.passportDetails.document.name || 'Passport Document',
-                                                                        mimeType: employee.passportDetails.document.mimeType || 'application/pdf'
+                                                                        data: employee.visaDetails[selectedVisaType].document.data,
+                                                                        name: employee.visaDetails[selectedVisaType].document.name || `${selectedVisaType} Visa Document`,
+                                                                        mimeType: employee.visaDetails[selectedVisaType].document.mimeType || 'application/pdf'
                                                                     });
                                                                     setShowDocumentViewer(true);
                                                                 }}
@@ -5759,679 +6271,762 @@ export default function EmployeeProfilePage() {
                                                         )}
                                                     </div>
                                                 )}
-                                                {extractingPassport && (
-                                                    <div className="flex flex-col gap-1">
-                                                        <p className="text-sm text-blue-600">Extracting details from PDF...</p>
-                                                    </div>
-                                                )}
-                                                {passportScanError && (
-                                                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
-                                                        <p className="text-xs text-red-600">{passportScanError}</p>
-                                                    </div>
-                                                )}
-                                                <p className="text-xs text-gray-500">Upload file in JPEG / PDF format. PDF files will be automatically scanned for details.</p>
                                             </div>
                                         </div>
-                                    </div>
+                                    ))}
                                 </div>
-                                <div className="flex items-center justify-end gap-4 px-6 py-4 border-t border-gray-100">
-                                    <button
-                                        onClick={handleClosePassportModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors"
-                                        disabled={savingPassport || extractingPassport}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handlePassportSubmit}
-                                        className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
-                                        disabled={savingPassport || extractingPassport}
-                                    >
-                                        {savingPassport ? 'Updating...' : extractingPassport ? 'Extracting...' : 'Update'}
-                                    </button>
+
+                                <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-700">
+                                    <p className="font-semibold mb-1">Note:</p>
+                                    <p>Visa requirements apply only if the employee&apos;s nationality is not UAE. Ensure the uploaded copy is clear and legible.</p>
                                 </div>
                             </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleCloseVisaModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleVisaSubmit}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+                                >
+                                    Save {visaTypes.find(type => type.key === selectedVisaType)?.label}
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    </div>
+                )
+            }
 
-                    {/* Visa Modal */}
-                    {showVisaModal && selectedVisaType && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleCloseVisaModal}></div>
-                            <div className="relative w-full max-w-4xl bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] max-h-[80vh] flex flex-col">
-                                <div className="flex flex-col gap-2 border-b border-gray-200 p-6 md:flex-row md:items-center md:justify-between">
-                                    <div>
-                                        <h3 className="text-2xl font-semibold text-gray-800">Visa Requirements</h3>
-                                        <p className="text-sm text-gray-500">
-                                            {selectedVisaLabel ? `${selectedVisaLabel} details` : 'Upload visa details'}
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={handleCloseVisaModal}
-                                        disabled={savingVisa}
-                                        className={`text-gray-400 hover:text-gray-600 self-start md:self-auto ${savingVisa ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    >
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                                    <div className="space-y-3">
-                                        {[
-                                            { label: 'Visa Number', field: 'number', type: 'text', required: true },
-                                            { label: 'Issue Date', field: 'issueDate', type: 'date', required: true },
-                                            { label: 'Expiry Date', field: 'expiryDate', type: 'date', required: true },
-                                            ...(selectedVisaType === 'employment' || selectedVisaType === 'spouse'
-                                                ? [{ label: 'Sponsor (Company / Individual)', field: 'sponsor', type: 'text', required: true }]
-                                                : []),
-                                            { label: 'Visa Copy Upload', field: 'file', type: 'file', required: true }
-                                        ].map((input) => (
-                                            <div key={`${selectedVisaType}-${input.field}`} className="flex flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                    {input.label} {input.required && <span className="text-red-500">*</span>}
-                                                </label>
-                                                <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                    {input.type === 'file' ? (
-                                                        <input
-                                                            type="file"
-                                                            accept=".pdf,.jpg,.jpeg,.png"
-                                                            onChange={(e) => handleVisaFileChange(selectedVisaType, e.target.files?.[0] || null)}
-                                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:text-[#3B82F6] file:font-medium file:px-4 file:py-2 ${visaErrors[selectedVisaType]?.file ? 'ring-2 ring-red-400 border-red-400' : ''
-                                                                }`}
-                                                            disabled={savingVisa}
-                                                        />
-                                                    ) : (
-                                                        <input
-                                                            type={input.type}
-                                                            value={visaForms[selectedVisaType]?.[input.field] || ''}
-                                                            onChange={(e) => handleVisaFieldChange(selectedVisaType, input.field, e.target.value)}
-                                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${visaErrors[selectedVisaType]?.[input.field] ? 'ring-2 ring-red-400 border-red-400' : ''
-                                                                }`}
-                                                            disabled={savingVisa}
-                                                        />
-                                                    )}
-                                                    {visaErrors[selectedVisaType]?.[input.field] && (
-                                                        <p className="text-xs text-red-500">{visaErrors[selectedVisaType][input.field]}</p>
-                                                    )}
-                                                    {input.field === 'file' && (visaForms[selectedVisaType].file || visaForms[selectedVisaType].fileName) && (
-                                                        <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
-                                                            <div className="flex items-center gap-2">
-                                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                    <path d="M20 6L9 17l-5-5"></path>
-                                                                </svg>
-                                                                <span>{visaForms[selectedVisaType].file?.name || visaForms[selectedVisaType].fileName}</span>
-                                                            </div>
-                                                            {employee?.visaDetails?.[selectedVisaType]?.document?.data && (
-                                                                <button
-                                                                    onClick={() => {
-                                                                        setViewingDocument({
-                                                                            data: employee.visaDetails[selectedVisaType].document.data,
-                                                                            name: employee.visaDetails[selectedVisaType].document.name || `${selectedVisaType} Visa Document`,
-                                                                            mimeType: employee.visaDetails[selectedVisaType].document.mimeType || 'application/pdf'
-                                                                        });
-                                                                        setShowDocumentViewer(true);
-                                                                    }}
-                                                                    className="text-blue-600 hover:text-blue-700 text-xs font-medium"
-                                                                >
-                                                                    View
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                </div>
+            {/* Bank Details Modal */}
+            {
+                showBankModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleCloseBankModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">Salary Bank Account</h3>
+                                <button
+                                    onClick={handleCloseBankModal}
+                                    className="absolute right-0 text-gray-400 hover:text-gray-600"
+                                    disabled={savingBank}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                <div className="flex flex-col gap-3">
+                                    {[
+                                        { label: 'Bank Name', field: 'bankName', type: 'text', required: true, inputMode: 'text' },
+                                        { label: 'Account Name', field: 'accountName', type: 'text', required: true, inputMode: 'text' },
+                                        { label: 'Account Number', field: 'accountNumber', type: 'text', required: true, inputMode: 'numeric' },
+                                        { label: 'IBAN Number', field: 'ibanNumber', type: 'text', required: true, inputMode: 'text' },
+                                        { label: 'SWIFT Code', field: 'swiftCode', type: 'text', required: false, inputMode: 'text' },
+                                        { label: 'Other Details (if any)', field: 'otherDetails', type: 'text', required: false, inputMode: 'text' }
+                                    ].map((input) => (
+                                        <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                                {input.label} {input.required && <span className="text-red-500">*</span>}
+                                            </label>
+                                            <div className="w-full md:flex-1 flex flex-col gap-1">
+                                                <input
+                                                    type={input.type}
+                                                    inputMode={input.inputMode}
+                                                    value={bankForm[input.field]}
+                                                    onChange={(e) => handleBankChange(input.field, e.target.value)}
+                                                    onInput={(e) => {
+                                                        // Additional real-time input restriction
+                                                        if (input.field === 'bankName' || input.field === 'accountName') {
+                                                            e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                                        } else if (input.field === 'accountNumber') {
+                                                            e.target.value = e.target.value.replace(/[^0-9]/g, '');
+                                                        } else if (input.field === 'ibanNumber') {
+                                                            e.target.value = e.target.value.replace(/[^A-Za-z0-9\s]/g, '').toUpperCase();
+                                                        } else if (input.field === 'swiftCode') {
+                                                            e.target.value = e.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                                                        }
+                                                    }}
+                                                    className={`w-full h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${bankFormErrors[input.field]
+                                                        ? 'border-red-500 focus:ring-red-500'
+                                                        : 'border-[#E5E7EB]'
+                                                        }`}
+                                                    placeholder={`Enter ${input.label.toLowerCase()}`}
+                                                    disabled={savingBank}
+                                                />
+                                                {bankFormErrors[input.field] && (
+                                                    <span className="text-xs text-red-500 mt-1">
+                                                        {bankFormErrors[input.field]}
+                                                    </span>
+                                                )}
                                             </div>
-                                        ))}
-                                    </div>
-
-                                    <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-700">
-                                        <p className="font-semibold mb-1">Note:</p>
-                                        <p>Visa requirements apply only if the employee&apos;s nationality is not UAE. Ensure the uploaded copy is clear and legible.</p>
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleCloseVisaModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleVisaSubmit}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
-                                    >
-                                        Save {visaTypes.find(type => type.key === selectedVisaType)?.label}
-                                    </button>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleCloseBankModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                    disabled={savingBank}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveBank}
+                                    disabled={savingBank}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    {savingBank ? 'Saving...' : 'Save'}
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    </div>
+                )
+            }
 
-                    {/* Bank Details Modal */}
-                    {showBankModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleCloseBankModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Salary Bank Account</h3>
-                                    <button
-                                        onClick={handleCloseBankModal}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                        disabled={savingBank}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    <div className="flex flex-col gap-3">
-                                        {[
-                                            { label: 'Bank Name', field: 'bankName', type: 'text', required: true },
-                                            { label: 'Account Name', field: 'accountName', type: 'text', required: true },
-                                            { label: 'Account Number', field: 'accountNumber', type: 'text', required: true },
-                                            { label: 'IBAN Number', field: 'ibanNumber', type: 'text', required: true },
-                                            { label: 'SWIFT Code', field: 'swiftCode', type: 'text', required: false },
-                                            { label: 'Other Details (if any)', field: 'otherDetails', type: 'text', required: false }
-                                        ].map((input) => (
-                                            <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                    {input.label} {input.required && <span className="text-red-500">*</span>}
-                                                </label>
-                                                <div className="w-full md:flex-1 flex flex-col gap-1">
+            {/* Salary Details Modal */}
+            {
+                showSalaryModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleCloseSalaryModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">
+                                    {editingSalaryIndex !== null ? 'Edit Salary Record' : hasSalaryDetails() ? 'Edit Salary Details' : 'Add Salary Record'}
+                                </h3>
+                                <button
+                                    onClick={handleCloseSalaryModal}
+                                    className="absolute right-0 text-gray-400 hover:text-gray-600"
+                                    disabled={savingSalary}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                <div className="flex flex-col gap-3">
+                                    {/* Month */}
+                                    <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                        <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                            Month <span className="text-red-500">*</span>
+                                        </label>
+                                        <div className="w-full md:flex-1 flex flex-col gap-1">
+                                            <select
+                                                value={salaryForm.month || ''}
+                                                onChange={(e) => {
+                                                    handleSalaryChange('month', e.target.value);
+                                                    if (salaryFormErrors.month) {
+                                                        setSalaryFormErrors(prev => ({ ...prev, month: '' }));
+                                                    }
+                                                }}
+                                                className={`w-full h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${salaryFormErrors.month ? 'border-red-500 focus:ring-red-500' : 'border-[#E5E7EB]'}`}
+                                                disabled={savingSalary}
+                                            >
+                                                <option value="">Select Month</option>
+                                                {monthOptions.map((option) => (
+                                                    <option key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {salaryFormErrors.month && (
+                                                <span className="text-xs text-red-500 mt-1">{salaryFormErrors.month}</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {[
+                                        { label: 'Basic Salary', field: 'basic', type: 'number', required: true, placeholder: 'Enter basic salary' },
+                                        { label: 'Other Allowance', field: 'otherAllowance', type: 'number', required: false, placeholder: 'Enter other allowance' },
+                                        { label: 'Total Salary', field: 'totalSalary', type: 'readonly', required: false, placeholder: 'Auto-calculated' }
+                                    ].map((input) => (
+                                        <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                                {input.label} {input.required && <span className="text-red-500">*</span>}
+                                            </label>
+                                            <div className="w-full md:flex-1 flex flex-col gap-1">
+                                                {input.type === 'date' ? (
                                                     <input
-                                                        type={input.type}
-                                                        value={bankForm[input.field]}
-                                                        onChange={(e) => handleBankChange(input.field, e.target.value)}
-                                                        className={`w-full h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${bankFormErrors[input.field]
+                                                        type="date"
+                                                        value={salaryForm[input.field]}
+                                                        onChange={(e) => {
+                                                            handleSalaryChange(input.field, e.target.value);
+                                                            if (salaryFormErrors[input.field]) {
+                                                                setSalaryFormErrors(prev => ({ ...prev, [input.field]: '' }));
+                                                            }
+                                                        }}
+                                                        className={`w-full h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${salaryFormErrors[input.field]
                                                             ? 'border-red-500 focus:ring-red-500'
                                                             : 'border-[#E5E7EB]'
                                                             }`}
-                                                        placeholder={`Enter ${input.label.toLowerCase()}`}
-                                                        disabled={savingBank}
+                                                        placeholder={input.placeholder}
+                                                        disabled={savingSalary}
                                                     />
-                                                    {bankFormErrors[input.field] && (
-                                                        <span className="text-xs text-red-500 mt-1">
-                                                            {bankFormErrors[input.field]}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleCloseBankModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                        disabled={savingBank}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSaveBank}
-                                        disabled={savingBank}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                                    >
-                                        {savingBank ? 'Saving...' : 'Save'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Salary Details Modal */}
-                    {showSalaryModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleCloseSalaryModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">
-                                        {editingSalaryIndex !== null ? 'Edit Salary Record' : 'Add Salary Record'}
-                                    </h3>
-                                    <button
-                                        onClick={handleCloseSalaryModal}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                        disabled={savingSalary}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    <div className="flex flex-col gap-3">
-                                        {[
-                                            { label: 'From Date', field: 'fromDate', type: 'date', required: true, placeholder: 'Select from date' },
-                                            { label: 'To Date', field: 'toDate', type: 'date', required: false, placeholder: 'Select to date (optional)' },
-                                            { label: 'Basic Salary', field: 'basic', type: 'number', required: true, placeholder: 'Enter basic salary' },
-                                            { label: 'Home Rent Allowance', field: 'houseRentAllowance', type: 'number', required: false, placeholder: 'Enter home rent allowance' },
-                                            { label: 'Vehicle Allowance', field: 'vehicleAllowance', type: 'number', required: false, placeholder: 'Enter vehicle allowance' },
-                                            { label: 'Other Allowance', field: 'otherAllowance', type: 'number', required: false, placeholder: 'Enter other allowance' }
-                                        ].map((input) => (
-                                            <div key={input.field} className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                                <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                    {input.label} {input.required && <span className="text-red-500">*</span>}
-                                                </label>
-                                                <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                    {input.type === 'date' ? (
+                                                ) : input.type === 'readonly' ? (
+                                                    <div className="relative">
+                                                        <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm">AED</span>
                                                         <input
-                                                            type="date"
+                                                            type="text"
+                                                            value={salaryForm[input.field] || '0.00'}
+                                                            readOnly
+                                                            className="w-full h-10 pl-12 pr-3 rounded-xl border bg-gray-100 text-gray-600 border-[#E5E7EB] cursor-not-allowed"
+                                                            placeholder={input.placeholder}
+                                                            disabled={true}
+                                                        />
+                                                    </div>
+                                                ) : (
+                                                    <div className="relative">
+                                                        <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm">AED</span>
+                                                        <input
+                                                            type="text"
+                                                            inputMode="decimal"
                                                             value={salaryForm[input.field]}
-                                                            onChange={(e) => {
-                                                                handleSalaryChange(input.field, e.target.value);
-                                                                if (salaryFormErrors[input.field]) {
-                                                                    setSalaryFormErrors(prev => ({ ...prev, [input.field]: '' }));
-                                                                }
+                                                            onChange={(e) => handleSalaryChange(input.field, e.target.value)}
+                                                            onInput={(e) => {
+                                                                // Restrict to numbers and decimal point only
+                                                                e.target.value = e.target.value.replace(/[^0-9.]/g, '');
                                                             }}
-                                                            className={`w-full h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${salaryFormErrors[input.field]
+                                                            className={`w-full h-10 pl-12 pr-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${salaryFormErrors[input.field]
                                                                 ? 'border-red-500 focus:ring-red-500'
                                                                 : 'border-[#E5E7EB]'
                                                                 }`}
                                                             placeholder={input.placeholder}
                                                             disabled={savingSalary}
                                                         />
-                                                    ) : (
-                                                        <div className="relative">
-                                                            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm">AED</span>
-                                                            <input
-                                                                type="text"
-                                                                inputMode="decimal"
-                                                                value={salaryForm[input.field]}
-                                                                onChange={(e) => handleSalaryChange(input.field, e.target.value)}
-                                                                className={`w-full h-10 pl-12 pr-3 rounded-xl border bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${salaryFormErrors[input.field]
-                                                                    ? 'border-red-500 focus:ring-red-500'
-                                                                    : 'border-[#E5E7EB]'
-                                                                    }`}
-                                                                placeholder={input.placeholder}
-                                                                disabled={savingSalary}
-                                                            />
-                                                        </div>
-                                                    )}
-                                                    {salaryFormErrors[input.field] && (
-                                                        <span className="text-xs text-red-500 mt-1">
-                                                            {salaryFormErrors[input.field]}
-                                                        </span>
-                                                    )}
-                                                </div>
+                                                    </div>
+                                                )}
+                                                {salaryFormErrors[input.field] && (
+                                                    <span className="text-xs text-red-500 mt-1">
+                                                        {salaryFormErrors[input.field]}
+                                                    </span>
+                                                )}
                                             </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleCloseSalaryModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                        disabled={savingSalary}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSaveSalary}
-                                        disabled={savingSalary}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                                    >
-                                        {savingSalary ? 'Saving...' : 'Save'}
-                                    </button>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleCloseSalaryModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                    disabled={savingSalary}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveSalary}
+                                    disabled={savingSalary}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    {savingSalary ? (hasSalaryDetails() && editingSalaryIndex === null ? 'Updating...' : 'Saving...') : (hasSalaryDetails() && editingSalaryIndex === null ? 'Update' : 'Save')}
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    </div>
+                )
+            }
 
-                    {/* Contact Details Modal */}
-                    {showContactModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleCloseContactModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[700px] max-h-[80vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-between pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Emergency Contact Details</h3>
-                                    <button
-                                        onClick={handleCloseContactModal}
-                                        className="text-gray-400 hover:text-gray-600"
-                                        disabled={savingContact}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
+            {/* Contact Details Modal */}
+            {
+                showContactModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleCloseContactModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[700px] max-h-[80vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">Emergency Contact Details</h3>
+                                <button
+                                    onClick={handleCloseContactModal}
+                                    className="text-gray-400 hover:text-gray-600"
+                                    disabled={savingContact}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                <div className="border border-gray-100 rounded-2xl p-4 bg-white space-y-4">
+                                    <div className="grid md:grid-cols-2 gap-4">
+                                        <div className="flex flex-col gap-2">
+                                            <span className="text-xs font-semibold text-gray-500">Name</span>
+                                            <input
+                                                type="text"
+                                                value={activeContactForm.name}
+                                                onChange={(e) => handleContactChange(0, 'name', e.target.value)}
+                                                className={`w-full h-10 px-3 rounded-xl border ${contactFormErrors['0_name'] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                placeholder="Enter contact name"
+                                                disabled={savingContact}
+                                            />
+                                            {contactFormErrors['0_name'] && (
+                                                <p className="text-xs text-red-500 mt-1">{contactFormErrors['0_name']}</p>
+                                            )}
+                                        </div>
+                                        <div className="flex flex-col gap-2">
+                                            <span className="text-xs font-semibold text-gray-500">Relation</span>
+                                            <select
+                                                value={activeContactForm.relation}
+                                                onChange={(e) => handleContactChange(0, 'relation', e.target.value)}
+                                                className={`w-full h-10 px-3 rounded-xl border ${contactFormErrors['0_relation'] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                disabled={savingContact}
+                                            >
+                                                {['Self', 'Father', 'Mother', 'Friend', 'Spouse', 'Other'].map((option) => (
+                                                    <option key={option} value={option}>
+                                                        {option}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {contactFormErrors['0_relation'] && (
+                                                <p className="text-xs text-red-500 mt-1">{contactFormErrors['0_relation']}</p>
+                                            )}
+                                        </div>
+                                        <div className="flex flex-col gap-2 md:col-span-2">
+                                            <span className="text-xs font-semibold text-gray-500">Phone Number</span>
+                                            <PhoneInput
+                                                country={DEFAULT_PHONE_COUNTRY}
+                                                value={activeContactForm.number}
+                                                onChange={(value, country) => handleContactChange(0, 'number', value, country)}
+                                                enableSearch
+                                                specialLabel=""
+                                                inputStyle={{
+                                                    width: '100%',
+                                                    height: '42px',
+                                                    borderRadius: '0.75rem',
+                                                    borderColor: contactFormErrors['0_number'] ? '#ef4444' : '#E5E7EB'
+                                                }}
+                                                buttonStyle={{
+                                                    borderTopLeftRadius: '0.75rem',
+                                                    borderBottomLeftRadius: '0.75rem',
+                                                    borderColor: contactFormErrors['0_number'] ? '#ef4444' : '#E5E7EB',
+                                                    backgroundColor: '#fff'
+                                                }}
+                                                dropdownStyle={{ borderRadius: '0.75rem' }}
+                                                placeholder="Enter contact number"
+                                                disabled={savingContact}
+                                            />
+                                            {contactFormErrors['0_number'] && (
+                                                <p className="text-xs text-red-500 mt-1">{contactFormErrors['0_number']}</p>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    <div className="border border-gray-100 rounded-2xl p-4 bg-white space-y-4">
-                                        <div className="grid md:grid-cols-2 gap-4">
-                                            <div className="flex flex-col gap-2">
-                                                <span className="text-xs font-semibold text-gray-500">Name</span>
-                                                <input
-                                                    type="text"
-                                                    value={activeContactForm.name}
-                                                    onChange={(e) => handleContactChange(0, 'name', e.target.value)}
-                                                    className="w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                    placeholder="Enter contact name"
-                                                    disabled={savingContact}
-                                                />
-                                            </div>
-                                            <div className="flex flex-col gap-2">
-                                                <span className="text-xs font-semibold text-gray-500">Relation</span>
-                                                <select
-                                                    value={activeContactForm.relation}
-                                                    onChange={(e) => handleContactChange(0, 'relation', e.target.value)}
-                                                    className="w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                    disabled={savingContact}
-                                                >
-                                                    {['Self', 'Father', 'Mother', 'Friend', 'Spouse', 'Other'].map((option) => (
-                                                        <option key={option} value={option}>
-                                                            {option}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            <div className="flex flex-col gap-2 md:col-span-2">
-                                                <span className="text-xs font-semibold text-gray-500">Phone Number</span>
+                            </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleCloseContactModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                    disabled={savingContact}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveContactDetails}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                                    disabled={savingContact}
+                                >
+                                    {savingContact ? 'Saving...' : 'Save'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+
+            {/* Personal Details Modal - Only show when on Personal Information tab */}
+            {
+                showPersonalModal && activeTab === 'personal' && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleClosePersonalModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[80vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">Personal Details</h3>
+                                <button
+                                    onClick={handleClosePersonalModal}
+                                    className="text-gray-400 hover:text-gray-600"
+                                    disabled={savingPersonal}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                {[
+                                    { label: 'Email Address', field: 'email', type: 'email', required: true },
+                                    { label: 'Contact Number', field: 'contactNumber', type: 'phone', required: true },
+                                    { label: 'Date of Birth', field: 'dateOfBirth', type: 'date', required: true, placeholder: 'yyyy-mm-dd' },
+                                    {
+                                        label: 'Marital Status',
+                                        field: 'maritalStatus',
+                                        type: 'select',
+                                        required: true,
+                                        options: [
+                                            { value: '', label: 'Select Marital Status' },
+                                            { value: 'single', label: 'Single' },
+                                            { value: 'married', label: 'Married' },
+                                            { value: 'divorced', label: 'Divorced' },
+                                            { value: 'widowed', label: 'Widowed' }
+                                        ]
+                                    },
+                                    { label: 'Father’s Name', field: 'fathersName', type: 'text', required: true },
+                                    {
+                                        label: 'Gender',
+                                        field: 'gender',
+                                        type: 'select',
+                                        required: true,
+                                        options: [
+                                            { value: '', label: 'Select Gender' },
+                                            { value: 'male', label: 'Male' },
+                                            { value: 'female', label: 'Female' },
+                                            { value: 'other', label: 'Other' }
+                                        ]
+                                    },
+                                    {
+                                        label: 'Nationality',
+                                        field: 'nationality',
+                                        type: 'select',
+                                        required: true,
+                                        options: [
+                                            { value: '', label: 'Select Nationality' },
+                                            ...getAllCountriesOptions()
+                                        ]
+                                    }
+                                ].map((input) => (
+                                    <div key={input.field} className="flex flex-col gap-2 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                        <label className="text-[14px] font-medium text-[#555555]">
+                                            {input.label} {input.required && <span className="text-red-500">*</span>}
+                                        </label>
+                                        {input.type === 'phone' ? (
+                                            <div>
                                                 <PhoneInput
                                                     country={DEFAULT_PHONE_COUNTRY}
-                                                    value={activeContactForm.number}
-                                                    onChange={(value, country) => handleContactChange(0, 'number', value, country)}
+                                                    value={personalForm.contactNumber}
+                                                    onChange={(value, country) => handlePersonalChange('contactNumber', value, country)}
                                                     enableSearch
                                                     specialLabel=""
                                                     inputStyle={{
                                                         width: '100%',
                                                         height: '42px',
                                                         borderRadius: '0.75rem',
-                                                        borderColor: contactFormErrors['0_number'] ? '#ef4444' : '#E5E7EB'
+                                                        borderColor: personalFormErrors.contactNumber ? '#ef4444' : '#E5E7EB'
                                                     }}
                                                     buttonStyle={{
                                                         borderTopLeftRadius: '0.75rem',
                                                         borderBottomLeftRadius: '0.75rem',
-                                                        borderColor: contactFormErrors['0_number'] ? '#ef4444' : '#E5E7EB',
+                                                        borderColor: personalFormErrors.contactNumber ? '#ef4444' : '#E5E7EB',
                                                         backgroundColor: '#fff'
                                                     }}
                                                     dropdownStyle={{ borderRadius: '0.75rem' }}
                                                     placeholder="Enter contact number"
-                                                    disabled={savingContact}
+                                                    disabled={savingPersonal}
                                                 />
-                                                {contactFormErrors['0_number'] && (
-                                                    <p className="text-xs text-red-500 mt-1">{contactFormErrors['0_number']}</p>
+                                                {personalFormErrors.contactNumber && (
+                                                    <p className="text-xs text-red-500 mt-1">{personalFormErrors.contactNumber}</p>
                                                 )}
                                             </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleCloseContactModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                        disabled={savingContact}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSaveContactDetails}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                                        disabled={savingContact}
-                                    >
-                                        {savingContact ? 'Saving...' : 'Save'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-
-                    {/* Personal Details Modal - Only show when on Personal Information tab */}
-                    {showPersonalModal && activeTab === 'personal' && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleClosePersonalModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[80vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-between pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">Personal Details</h3>
-                                    <button
-                                        onClick={handleClosePersonalModal}
-                                        className="text-gray-400 hover:text-gray-600"
-                                        disabled={savingPersonal}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    {[
-                                        { label: 'Email Address', field: 'email', type: 'email', required: true },
-                                        { label: 'Contact Number', field: 'contactNumber', type: 'phone', required: true },
-                                        { label: 'Date of Birth', field: 'dateOfBirth', type: 'date', required: false },
-                                        { label: 'Marital Status', field: 'maritalStatus', type: 'text', required: false },
-                                        { label: 'Father’s Name', field: 'fathersName', type: 'text', required: false },
-                                        { label: 'Gender', field: 'gender', type: 'text', required: true },
-                                        { label: 'Nationality', field: 'nationality', type: 'text', required: false }
-                                    ].map((input) => (
-                                        <div key={input.field} className="flex flex-col gap-2 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555]">
-                                                {input.label} {input.required && <span className="text-red-500">*</span>}
-                                            </label>
-                                            {input.type === 'phone' ? (
-                                                <div>
-                                                    <PhoneInput
-                                                        country={DEFAULT_PHONE_COUNTRY}
-                                                        value={personalForm.contactNumber}
-                                                        onChange={(value, country) => handlePersonalChange('contactNumber', value, country)}
-                                                        enableSearch
-                                                        specialLabel=""
-                                                        inputStyle={{
-                                                            width: '100%',
-                                                            height: '42px',
-                                                            borderRadius: '0.75rem',
-                                                            borderColor: personalFormErrors.contactNumber ? '#ef4444' : '#E5E7EB'
-                                                        }}
-                                                        buttonStyle={{
-                                                            borderTopLeftRadius: '0.75rem',
-                                                            borderBottomLeftRadius: '0.75rem',
-                                                            borderColor: personalFormErrors.contactNumber ? '#ef4444' : '#E5E7EB',
-                                                            backgroundColor: '#fff'
-                                                        }}
-                                                        dropdownStyle={{ borderRadius: '0.75rem' }}
-                                                        placeholder="Enter contact number"
-                                                        disabled={savingPersonal}
-                                                    />
-                                                    {personalFormErrors.contactNumber && (
-                                                        <p className="text-xs text-red-500 mt-1">{personalFormErrors.contactNumber}</p>
-                                                    )}
-                                                </div>
-                                            ) : (
+                                        ) : input.type === 'select' ? (
+                                            <div className="w-full flex-1 flex flex-col gap-1">
+                                                <select
+                                                    value={personalForm[input.field]}
+                                                    onChange={(e) => handlePersonalChange(input.field, e.target.value)}
+                                                    className={`w-full h-10 px-3 rounded-xl border ${personalFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                    disabled={savingPersonal}
+                                                >
+                                                    {input.options.map((option) => (
+                                                        <option key={option.value} value={option.value}>
+                                                            {option.label}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {personalFormErrors[input.field] && (
+                                                    <p className="text-xs text-red-500 mt-1">{personalFormErrors[input.field]}</p>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="w-full flex-1 flex flex-col gap-1">
                                                 <input
                                                     type={input.type}
                                                     value={personalForm[input.field]}
                                                     onChange={(e) => handlePersonalChange(input.field, e.target.value)}
-                                                    className="w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                    placeholder={`Enter ${input.label.toLowerCase()}`}
+                                                    className={`w-full h-10 px-3 rounded-xl border ${personalFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                    placeholder={input.placeholder || `Enter ${input.label.toLowerCase()}`}
                                                     disabled={savingPersonal}
                                                 />
+                                                {personalFormErrors[input.field] && (
+                                                    <p className="text-xs text-red-500 mt-1">{personalFormErrors[input.field]}</p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleClosePersonalModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                    disabled={savingPersonal}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSavePersonalDetails}
+                                    disabled={savingPersonal}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                    {savingPersonal ? 'Saving...' : 'Save'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+
+            {/* Address Modal */}
+            {
+                showAddressModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={handleCloseAddressModal}></div>
+                        <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[80vh] p-6 md:p-8 flex flex-col">
+                            <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                                <h3 className="text-[22px] font-semibold text-gray-800">
+                                    {addressModalType === 'permanent' ? 'Permanent Address' : 'Current Address'}
+                                </h3>
+                                <button
+                                    onClick={handleCloseAddressModal}
+                                    className="text-gray-400 hover:text-gray-600"
+                                    disabled={savingAddress}
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                                {[
+                                    { label: 'Address Line 1', field: 'line1', type: 'text', required: true },
+                                    { label: 'Address Line 2', field: 'line2', type: 'text', required: false },
+                                    { label: 'City', field: 'city', type: 'text', required: true },
+                                    { label: addressModalType === 'permanent' ? 'State' : 'Emirate', field: 'state', type: 'text', required: true },
+                                    {
+                                        label: 'Country',
+                                        field: 'country',
+                                        type: 'select',
+                                        required: true,
+                                        options: [
+                                            { value: '', label: 'Select Country' },
+                                            ...getAllCountriesOptions()
+                                        ]
+                                    },
+                                    { label: 'Postal Code', field: 'postalCode', type: 'text', required: false }
+                                ].map((input) => (
+                                    <div key={input.field} className="flex flex-col gap-2 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                        <label className="text-[14px] font-medium text-[#555555]">
+                                            {input.label} {input.required && <span className="text-red-500">*</span>}
+                                        </label>
+                                        {input.type === 'select' ? (
+                                            <div className="w-full flex-1 flex flex-col gap-1">
+                                                <select
+                                                    value={addressForm[input.field]}
+                                                    onChange={(e) => handleAddressChange(input.field, e.target.value)}
+                                                    className={`w-full h-10 px-3 rounded-xl border ${addressFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                    disabled={savingAddress}
+                                                >
+                                                    {input.options.map((option) => (
+                                                        <option key={option.value} value={option.value}>
+                                                            {option.label}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {addressFormErrors[input.field] && (
+                                                    <p className="text-xs text-red-500 mt-1">{addressFormErrors[input.field]}</p>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="w-full flex-1 flex flex-col gap-1">
+                                                <input
+                                                    type={input.type}
+                                                    value={addressForm[input.field]}
+                                                    onChange={(e) => handleAddressChange(input.field, e.target.value)}
+                                                    className={`w-full h-10 px-3 rounded-xl border ${addressFormErrors[input.field] ? 'border-red-500' : 'border-[#E5E7EB]'} bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40`}
+                                                    placeholder={`Enter ${input.label.toLowerCase()}`}
+                                                    disabled={savingAddress}
+                                                />
+                                                {addressFormErrors[input.field] && (
+                                                    <p className="text-xs text-red-500 mt-1">{addressFormErrors[input.field]}</p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
+                                <button
+                                    onClick={handleCloseAddressModal}
+                                    className="text-red-500 hover:text-red-600 font-semibold text-sm"
+                                    disabled={savingAddress}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveAddress}
+                                    className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                                    disabled={savingAddress}
+                                >
+                                    {savingAddress ? 'Saving...' : 'Save'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Add More Modal */}
+            {
+                showAddMoreModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/40" onClick={() => {
+                            setShowAddMoreModal(false);
+                            setShowVisaTypeDropdownInModal(false);
+                        }}></div>
+                        <div className="relative bg-white/50 backdrop-blur-sm rounded-lg shadow-lg w-full max-w-[550px] p-4 flex flex-col">
+                            <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                                <h3 className="text-lg font-semibold text-gray-800">Add More</h3>
+                                <button
+                                    onClick={() => {
+                                        setShowAddMoreModal(false);
+                                        setShowVisaTypeDropdownInModal(false);
+                                    }}
+                                    className="text-gray-400 hover:text-gray-600"
+                                >
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 p-4">
+                                {(() => {
+                                    // Tab-based filter: 0 = basic details tab, 1 = personal information tab
+                                    const tabFilter = activeTab === 'basic' ? 0 : activeTab === 'personal' ? 1 : 0;
+
+                                    const hasVisitVisa = employee.visaDetails?.visit?.number;
+                                    const hasEmploymentVisa = employee.visaDetails?.employment?.number;
+                                    const hasSpouseVisa = employee.visaDetails?.spouse?.number;
+                                    const hasAnyVisa = hasVisitVisa || hasEmploymentVisa || hasSpouseVisa;
+                                    const hasEmploymentOrSpouseVisa = hasEmploymentVisa || hasSpouseVisa;
+
+                                    return (
+                                        <>
+                                            {/* Passport button - only show if passport data doesn't exist AND tab is basic (0) */}
+                                            {tabFilter === 0 && !employee.passportDetails?.number && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowAddMoreModal(false);
+                                                        setTimeout(() => {
+                                                            handleOpenPassportModal();
+                                                        }, 150);
+                                                    }}
+                                                    className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                >
+                                                    Passport
+                                                    <span className="text-sm leading-none">+</span>
+                                                </button>
                                             )}
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleClosePersonalModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                        disabled={savingPersonal}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSavePersonalDetails}
-                                        disabled={savingPersonal}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                                    >
-                                        {savingPersonal ? 'Saving...' : 'Save'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
+                                            {/* Visa button - only show if no visa exists and nationality is not UAE AND tab is basic (0) */}
+                                            {tabFilter === 0 && isVisaRequirementApplicable && !hasAnyVisa && (
+                                                <div className="relative">
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            setShowVisaTypeDropdownInModal(!showVisaTypeDropdownInModal);
+                                                        }}
+                                                        className="w-full px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                    >
+                                                        Visa
+                                                        <span className="text-sm leading-none">+</span>
+                                                    </button>
+                                                    {showVisaTypeDropdownInModal && (
+                                                        <div className="absolute top-full left-0 mt-2 w-full z-[60] bg-white rounded-lg border border-gray-200 shadow-lg">
+                                                            {visaTypes.map((type) => (
+                                                                <button
+                                                                    key={type.key}
+                                                                    onClick={(e) => {
+                                                                        e.preventDefault();
+                                                                        e.stopPropagation();
+                                                                        setShowAddMoreModal(false);
+                                                                        setShowVisaTypeDropdownInModal(false);
+                                                                        setTimeout(() => {
+                                                                            handleOpenVisaModal(type.key);
+                                                                        }, 150);
+                                                                    }}
+                                                                    className="w-full px-4 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 first:rounded-t-lg last:rounded-b-lg"
+                                                                >
+                                                                    {type.label}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
 
-                    {/* Address Modal */}
-                    {showAddressModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={handleCloseAddressModal}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[80vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-between pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">
-                                        {addressModalType === 'permanent' ? 'Permanent Address' : 'Current Address'}
-                                    </h3>
-                                    <button
-                                        onClick={handleCloseAddressModal}
-                                        className="text-gray-400 hover:text-gray-600"
-                                        disabled={savingAddress}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    {[
-                                        { label: 'Address Line 1', field: 'line1', type: 'text', required: true },
-                                        { label: 'Address Line 2', field: 'line2', type: 'text', required: false },
-                                        { label: 'City', field: 'city', type: 'text', required: true },
-                                        { label: addressModalType === 'permanent' ? 'State' : 'Emirate', field: 'state', type: 'text', required: true },
-                                        { label: 'Country', field: 'country', type: 'text', required: true },
-                                        { label: 'Postal Code', field: 'postalCode', type: 'text', required: true }
-                                    ].map((input) => (
-                                        <div key={input.field} className="flex flex-col gap-2 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555]">
-                                                {input.label} {input.required && <span className="text-red-500">*</span>}
-                                            </label>
-                                            <input
-                                                type={input.type}
-                                                value={addressForm[input.field]}
-                                                onChange={(e) => handleAddressChange(input.field, e.target.value)}
-                                                className="w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40"
-                                                placeholder={`Enter ${input.label.toLowerCase()}`}
-                                                disabled={savingAddress}
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="flex items-center justify-end gap-4 border-t border-gray-200 px-6 py-4">
-                                    <button
-                                        onClick={handleCloseAddressModal}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm"
-                                        disabled={savingAddress}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSaveAddress}
-                                        className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
-                                        disabled={savingAddress}
-                                    >
-                                        {savingAddress ? 'Saving...' : 'Save'}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                                            {/* If visit visa exists: Show only Medical Insurance AND tab is basic (0) */}
+                                            {tabFilter === 0 && hasVisitVisa && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowAddMoreModal(false);
+                                                        // Add Medical Insurance handler
+                                                    }}
+                                                    className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                >
+                                                    Medical Insurance
+                                                    <span className="text-sm leading-none">+</span>
+                                                </button>
+                                            )}
 
-                    {/* Add More Modal */}
-                    {showAddMoreModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={() => {
-                                setShowAddMoreModal(false);
-                                setShowVisaTypeDropdownInModal(false);
-                            }}></div>
-                            <div className="relative bg-white/50 backdrop-blur-sm rounded-lg shadow-lg w-full max-w-[550px] p-4 flex flex-col">
-                                <div className="flex items-center justify-between pb-3 border-b border-gray-200">
-                                    <h3 className="text-lg font-semibold text-gray-800">Add More</h3>
-                                    <button
-                                        onClick={() => {
-                                            setShowAddMoreModal(false);
-                                            setShowVisaTypeDropdownInModal(false);
-                                        }}
-                                        className="text-gray-400 hover:text-gray-600"
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="grid grid-cols-3 gap-3 p-4">
-                                    {(() => {
-                                        // Tab-based filter: 0 = basic details tab, 1 = personal information tab
-                                        const tabFilter = activeTab === 'basic' ? 0 : activeTab === 'personal' ? 1 : 0;
-
-                                        const hasVisitVisa = employee.visaDetails?.visit?.number;
-                                        const hasEmploymentVisa = employee.visaDetails?.employment?.number;
-                                        const hasSpouseVisa = employee.visaDetails?.spouse?.number;
-                                        const hasAnyVisa = hasVisitVisa || hasEmploymentVisa || hasSpouseVisa;
-                                        const hasEmploymentOrSpouseVisa = hasEmploymentVisa || hasSpouseVisa;
-
-                                        return (
-                                            <>
-                                                {/* Passport button - only show if passport data doesn't exist AND tab is basic (0) */}
-                                                {tabFilter === 0 && !employee.passportDetails?.number && (
+                                            {/* If employment or spouse visa exists: Show Emirates ID, Labour Card, Medical Insurance AND tab is basic (0) */}
+                                            {tabFilter === 0 && hasEmploymentOrSpouseVisa && (
+                                                <>
                                                     <button
                                                         onClick={(e) => {
                                                             e.preventDefault();
                                                             e.stopPropagation();
                                                             setShowAddMoreModal(false);
-                                                            setTimeout(() => {
-                                                                handleOpenPassportModal();
-                                                            }, 150);
+                                                            // Add Emirates ID handler
                                                         }}
                                                         className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
                                                     >
-                                                        Passport
+                                                        Emirates ID
                                                         <span className="text-sm leading-none">+</span>
                                                     </button>
-                                                )}
-
-                                                {/* Visa button - only show if no visa exists and nationality is not UAE AND tab is basic (0) */}
-                                                {tabFilter === 0 && isVisaRequirementApplicable && !hasAnyVisa && (
-                                                    <div className="relative">
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.preventDefault();
-                                                                e.stopPropagation();
-                                                                setShowVisaTypeDropdownInModal(!showVisaTypeDropdownInModal);
-                                                            }}
-                                                            className="w-full px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                        >
-                                                            Visa
-                                                            <span className="text-sm leading-none">+</span>
-                                                        </button>
-                                                        {showVisaTypeDropdownInModal && (
-                                                            <div className="absolute top-full left-0 mt-2 w-full z-[60] bg-white rounded-lg border border-gray-200 shadow-lg">
-                                                                {visaTypes.map((type) => (
-                                                                    <button
-                                                                        key={type.key}
-                                                                        onClick={(e) => {
-                                                                            e.preventDefault();
-                                                                            e.stopPropagation();
-                                                                            setShowAddMoreModal(false);
-                                                                            setShowVisaTypeDropdownInModal(false);
-                                                                            setTimeout(() => {
-                                                                                handleOpenVisaModal(type.key);
-                                                                            }, 150);
-                                                                        }}
-                                                                        className="w-full px-4 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 first:rounded-t-lg last:rounded-b-lg"
-                                                                    >
-                                                                        {type.label}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-
-                                                {/* If visit visa exists: Show only Medical Insurance AND tab is basic (0) */}
-                                                {tabFilter === 0 && hasVisitVisa && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            setShowAddMoreModal(false);
+                                                            // Add Labour Card handler
+                                                        }}
+                                                        className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                    >
+                                                        Labour Card
+                                                        <span className="text-sm leading-none">+</span>
+                                                    </button>
                                                     <button
                                                         onClick={(e) => {
                                                             e.preventDefault();
@@ -6444,337 +7039,294 @@ export default function EmployeeProfilePage() {
                                                         Medical Insurance
                                                         <span className="text-sm leading-none">+</span>
                                                     </button>
-                                                )}
+                                                </>
+                                            )}
 
-                                                {/* If employment or spouse visa exists: Show Emirates ID, Labour Card, Medical Insurance AND tab is basic (0) */}
-                                                {tabFilter === 0 && hasEmploymentOrSpouseVisa && (
-                                                    <>
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.preventDefault();
-                                                                e.stopPropagation();
-                                                                setShowAddMoreModal(false);
-                                                                // Add Emirates ID handler
-                                                            }}
-                                                            className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                        >
-                                                            Emirates ID
-                                                            <span className="text-sm leading-none">+</span>
-                                                        </button>
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.preventDefault();
-                                                                e.stopPropagation();
-                                                                setShowAddMoreModal(false);
-                                                                // Add Labour Card handler
-                                                            }}
-                                                            className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                        >
-                                                            Labour Card
-                                                            <span className="text-sm leading-none">+</span>
-                                                        </button>
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.preventDefault();
-                                                                e.stopPropagation();
-                                                                setShowAddMoreModal(false);
-                                                                // Add Medical Insurance handler
-                                                            }}
-                                                            className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                        >
-                                                            Medical Insurance
-                                                            <span className="text-sm leading-none">+</span>
-                                                        </button>
-                                                    </>
-                                                )}
+                                            {/* Current Address button - only show if current address doesn't exist AND tab is personal (1) */}
+                                            {tabFilter === 1 && !hasCurrentAddress && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowAddMoreModal(false);
+                                                        setTimeout(() => {
+                                                            handleOpenAddressModal('current');
+                                                        }, 150);
+                                                    }}
+                                                    className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                >
+                                                    Current Address
+                                                    <span className="text-sm leading-none">+</span>
+                                                </button>
+                                            )}
 
-                                                {/* Current Address button - only show if current address doesn't exist AND tab is personal (1) */}
-                                                {tabFilter === 1 && !hasCurrentAddress && (
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            setShowAddMoreModal(false);
-                                                            setTimeout(() => {
-                                                                handleOpenAddressModal('current');
-                                                            }, 150);
-                                                        }}
-                                                        className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                    >
-                                                        Current Address
-                                                        <span className="text-sm leading-none">+</span>
-                                                    </button>
-                                                )}
+                                            {/* Permanent Address button - only show if permanent address doesn't exist AND tab is personal (1) */}
+                                            {tabFilter === 1 && !hasPermanentAddress && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowAddMoreModal(false);
+                                                        setTimeout(() => {
+                                                            handleOpenAddressModal('permanent');
+                                                        }, 150);
+                                                    }}
+                                                    className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                >
+                                                    Permanent Address
+                                                    <span className="text-sm leading-none">+</span>
+                                                </button>
+                                            )}
 
-                                                {/* Permanent Address button - only show if permanent address doesn't exist AND tab is personal (1) */}
-                                                {tabFilter === 1 && !hasPermanentAddress && (
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            setShowAddMoreModal(false);
-                                                            setTimeout(() => {
-                                                                handleOpenAddressModal('permanent');
-                                                            }, 150);
-                                                        }}
-                                                        className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                    >
-                                                        Permanent Address
-                                                        <span className="text-sm leading-none">+</span>
-                                                    </button>
-                                                )}
-
-                                                {/* Emergency Contact button - only show if emergency contact doesn't exist AND tab is personal (1) */}
-                                                {tabFilter === 1 && !hasContactDetails && (
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            setShowAddMoreModal(false);
-                                                            setTimeout(() => {
-                                                                handleOpenContactModal();
-                                                            }, 150);
-                                                        }}
-                                                        className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
-                                                    >
-                                                        Emergency Contact
-                                                        <span className="text-sm leading-none">+</span>
-                                                    </button>
-                                                )}
-                                            </>
-                                        );
-                                    })()}
-                                </div>
+                                            {/* Emergency Contact button - only show if emergency contact doesn't exist AND tab is personal (1) */}
+                                            {tabFilter === 1 && !hasContactDetails && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowAddMoreModal(false);
+                                                        setTimeout(() => {
+                                                            handleOpenContactModal();
+                                                        }, 150);
+                                                    }}
+                                                    className="px-3 py-2 bg-teal-500 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors shadow-sm cursor-pointer"
+                                                >
+                                                    Emergency Contact
+                                                    <span className="text-sm leading-none">+</span>
+                                                </button>
+                                            )}
+                                        </>
+                                    );
+                                })()}
                             </div>
                         </div>
-                    )}
+                    </div>
+                )
+            }
 
-                    {/* Add Education Modal */}
-                    {showEducationModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                            <div className="absolute inset-0 bg-black/40" onClick={() => {
-                                if (!savingEducation) {
-                                    setShowEducationModal(false);
-                                    setEditingEducationId(null);
-                                }
-                            }}></div>
-                            <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
-                                <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
-                                    <h3 className="text-[22px] font-semibold text-gray-800">{editingEducationId ? 'Edit Education' : 'Add Education'}</h3>
-                                    <button
-                                        onClick={() => {
-                                            if (!savingEducation) {
-                                                setShowEducationModal(false);
-                                                setEditingEducationId(null);
-                                            }
-                                        }}
-                                        className="absolute right-0 text-gray-400 hover:text-gray-600"
-                                        disabled={savingEducation}
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
-                                    <div className="flex flex-col gap-3">
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                University / Board <span className="text-red-500">*</span>
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <input
-                                                    type="text"
-                                                    value={educationForm.universityOrBoard}
-                                                    onChange={(e) => {
-                                                        handleEducationChange('universityOrBoard', e.target.value);
-                                                        if (educationErrors.universityOrBoard) {
-                                                            setEducationErrors(prev => ({ ...prev, universityOrBoard: '' }));
-                                                        }
-                                                    }}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.universityOrBoard ? 'ring-2 ring-red-400 border-red-400' : ''}`}
-                                                    disabled={savingEducation}
-                                                />
-                                                {educationErrors.universityOrBoard && (
-                                                    <p className="text-xs text-red-500">{educationErrors.universityOrBoard}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                College / Institute <span className="text-red-500">*</span>
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <input
-                                                    type="text"
-                                                    value={educationForm.collegeOrInstitute}
-                                                    onChange={(e) => {
-                                                        handleEducationChange('collegeOrInstitute', e.target.value);
-                                                        if (educationErrors.collegeOrInstitute) {
-                                                            setEducationErrors(prev => ({ ...prev, collegeOrInstitute: '' }));
-                                                        }
-                                                    }}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.collegeOrInstitute ? 'ring-2 ring-red-400 border-red-400' : ''}`}
-                                                    disabled={savingEducation}
-                                                />
-                                                {educationErrors.collegeOrInstitute && (
-                                                    <p className="text-xs text-red-500">{educationErrors.collegeOrInstitute}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                Course <span className="text-red-500">*</span>
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <input
-                                                    type="text"
-                                                    value={educationForm.course}
-                                                    onChange={(e) => {
-                                                        handleEducationChange('course', e.target.value);
-                                                        if (educationErrors.course) {
-                                                            setEducationErrors(prev => ({ ...prev, course: '' }));
-                                                        }
-                                                    }}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.course ? 'ring-2 ring-red-400 border-red-400' : ''}`}
-                                                    disabled={savingEducation}
-                                                />
-                                                {educationErrors.course && (
-                                                    <p className="text-xs text-red-500">{educationErrors.course}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                Field of Study <span className="text-red-500">*</span>
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <input
-                                                    type="text"
-                                                    value={educationForm.fieldOfStudy}
-                                                    onChange={(e) => {
-                                                        handleEducationChange('fieldOfStudy', e.target.value);
-                                                        if (educationErrors.fieldOfStudy) {
-                                                            setEducationErrors(prev => ({ ...prev, fieldOfStudy: '' }));
-                                                        }
-                                                    }}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.fieldOfStudy ? 'ring-2 ring-red-400 border-red-400' : ''}`}
-                                                    disabled={savingEducation}
-                                                />
-                                                {educationErrors.fieldOfStudy && (
-                                                    <p className="text-xs text-red-500">{educationErrors.fieldOfStudy}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                Completed Year <span className="text-red-500">*</span>
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-1">
-                                                <input
-                                                    type="text"
-                                                    value={educationForm.completedYear}
-                                                    onChange={(e) => {
-                                                        handleEducationChange('completedYear', e.target.value);
-                                                        if (educationErrors.completedYear) {
-                                                            setEducationErrors(prev => ({ ...prev, completedYear: '' }));
-                                                        }
-                                                    }}
-                                                    className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.completedYear ? 'ring-2 ring-red-400 border-red-400' : ''}`}
-                                                    disabled={savingEducation}
-                                                />
-                                                {educationErrors.completedYear && (
-                                                    <p className="text-xs text-red-500">{educationErrors.completedYear}</p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
-                                            <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                                Certificate
-                                            </label>
-                                            <div className="w-full md:flex-1 flex flex-col gap-2">
-                                                <div className="flex items-center gap-2">
-                                                    <input
-                                                        ref={educationCertificateFileRef}
-                                                        type="file"
-                                                        accept=".pdf,.jpg,.jpeg,.png"
-                                                        onChange={handleEducationFileChange}
-                                                        className="hidden"
-                                                        disabled={savingEducation}
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => educationCertificateFileRef.current?.click()}
-                                                        disabled={savingEducation}
-                                                        className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-blue-600 font-medium text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        Choose File
-                                                    </button>
-                                                    <input
-                                                        type="text"
-                                                        readOnly
-                                                        value={educationForm.certificateName || 'No file chosen'}
-                                                        className="flex-1 h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-600 text-sm"
-                                                        placeholder="No file chosen"
-                                                    />
-                                                </div>
-                                                {educationForm.certificateName && educationForm.certificateData && (
-                                                    <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
-                                                        <div className="flex items-center gap-2">
-                                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <path d="M20 6L9 17l-5-5"></path>
-                                                            </svg>
-                                                            <span>{educationForm.certificateName}</span>
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setViewingDocument({
-                                                                    data: educationForm.certificateData,
-                                                                    name: educationForm.certificateName,
-                                                                    mimeType: educationForm.certificateMime || 'application/pdf'
-                                                                });
-                                                                setShowDocumentViewer(true);
-                                                            }}
-                                                            className="text-blue-600 hover:text-blue-700 text-xs font-medium"
-                                                        >
-                                                            View
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                <p className="text-xs text-gray-500">Upload file in PDF, JPEG, PNG format</p>
-                                            </div>
-                                        </div>
+            {/* Add Education Modal */}
+            {showEducationModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/40" onClick={() => {
+                        if (!savingEducation) {
+                            setShowEducationModal(false);
+                            setEditingEducationId(null);
+                        }
+                    }}></div>
+                    <div className="relative bg-white rounded-[22px] shadow-[0_5px_20px_rgba(0,0,0,0.1)] w-full max-w-[750px] max-h-[75vh] p-6 md:p-8 flex flex-col">
+                        <div className="flex items-center justify-center relative pb-3 border-b border-gray-200">
+                            <h3 className="text-[22px] font-semibold text-gray-800">{editingEducationId ? 'Edit Education' : 'Add Education'}</h3>
+                            <button
+                                onClick={() => {
+                                    if (!savingEducation) {
+                                        setShowEducationModal(false);
+                                        setEditingEducationId(null);
+                                    }
+                                }}
+                                className="absolute right-0 text-gray-400 hover:text-gray-600"
+                                disabled={savingEducation}
+                            >
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="space-y-3 px-1 md:px-2 pt-4 pb-2 flex-1 overflow-y-auto modal-scroll">
+                            <div className="flex flex-col gap-3">
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        University / Board <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-1">
+                                        <input
+                                            type="text"
+                                            value={educationForm.universityOrBoard}
+                                            onChange={(e) => handleEducationChange('universityOrBoard', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                            }}
+                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.universityOrBoard ? 'ring-2 ring-red-400 border-red-400' : ''}`}
+                                            disabled={savingEducation}
+                                        />
+                                        {educationErrors.universityOrBoard && (
+                                            <p className="text-xs text-red-500">{educationErrors.universityOrBoard}</p>
+                                        )}
                                     </div>
                                 </div>
-                                <div className="flex items-center justify-end gap-4 px-6 py-4 border-t border-gray-100">
-                                    <button
-                                        onClick={() => {
-                                            if (!savingEducation) {
-                                                setShowEducationModal(false);
-                                                setEditingEducationId(null);
-                                            }
-                                        }}
-                                        className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors"
-                                        disabled={savingEducation}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={handleSaveEducation}
-                                        className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
-                                        disabled={savingEducation}
-                                    >
-                                        {savingEducation ? 'Saving...' : editingEducationId ? 'Update' : 'Save'}
-                                    </button>
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        College / Institute <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-1">
+                                        <input
+                                            type="text"
+                                            value={educationForm.collegeOrInstitute}
+                                            onChange={(e) => handleEducationChange('collegeOrInstitute', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                            }}
+                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.collegeOrInstitute ? 'ring-2 ring-red-400 border-red-400' : ''}`}
+                                            disabled={savingEducation}
+                                        />
+                                        {educationErrors.collegeOrInstitute && (
+                                            <p className="text-xs text-red-500">{educationErrors.collegeOrInstitute}</p>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        Course <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-1">
+                                        <input
+                                            type="text"
+                                            value={educationForm.course}
+                                            onChange={(e) => handleEducationChange('course', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                            }}
+                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.course ? 'ring-2 ring-red-400 border-red-400' : ''}`}
+                                            disabled={savingEducation}
+                                        />
+                                        {educationErrors.course && (
+                                            <p className="text-xs text-red-500">{educationErrors.course}</p>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        Field of Study <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-1">
+                                        <input
+                                            type="text"
+                                            value={educationForm.fieldOfStudy}
+                                            onChange={(e) => handleEducationChange('fieldOfStudy', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z\s]/g, '');
+                                            }}
+                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.fieldOfStudy ? 'ring-2 ring-red-400 border-red-400' : ''}`}
+                                            disabled={savingEducation}
+                                        />
+                                        {educationErrors.fieldOfStudy && (
+                                            <p className="text-xs text-red-500">{educationErrors.fieldOfStudy}</p>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        Completed Year <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-1">
+                                        <input
+                                            type="text"
+                                            value={educationForm.completedYear}
+                                            onChange={(e) => handleEducationChange('completedYear', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to digits only, max 4 digits
+                                                e.target.value = e.target.value.replace(/[^\d]/g, '').slice(0, 4);
+                                            }}
+                                            maxLength={4}
+                                            placeholder="YYYY"
+                                            className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${educationErrors.completedYear ? 'ring-2 ring-red-400 border-red-400' : ''}`}
+                                            disabled={savingEducation}
+                                        />
+                                        {educationErrors.completedYear && (
+                                            <p className="text-xs text-red-500">{educationErrors.completedYear}</p>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
+                                    <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
+                                        Certificate <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="w-full md:flex-1 flex flex-col gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                ref={educationCertificateFileRef}
+                                                type="file"
+                                                accept=".pdf,.jpg,.jpeg,.png"
+                                                onChange={handleEducationFileChange}
+                                                className="hidden"
+                                                disabled={savingEducation}
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => educationCertificateFileRef.current?.click()}
+                                                disabled={savingEducation}
+                                                className={`px-4 py-2 bg-white border rounded-lg text-blue-600 font-medium text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed ${educationErrors.certificate ? 'border-red-400' : 'border-gray-300'}`}
+                                            >
+                                                Choose File
+                                            </button>
+                                            <input
+                                                type="text"
+                                                readOnly
+                                                value={educationForm.certificateName || 'No file chosen'}
+                                                className={`flex-1 h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-600 text-sm ${educationErrors.certificate ? 'ring-2 ring-red-400 border-red-400' : 'border-[#E5E7EB]'}`}
+                                                placeholder="No file chosen"
+                                            />
+                                        </div>
+                                        {educationErrors.certificate && (
+                                            <p className="text-xs text-red-500">{educationErrors.certificate}</p>
+                                        )}
+                                        {educationForm.certificateName && educationForm.certificateData && (
+                                            <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
+                                                <div className="flex items-center gap-2">
+                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <path d="M20 6L9 17l-5-5"></path>
+                                                    </svg>
+                                                    <span>{educationForm.certificateName}</span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setViewingDocument({
+                                                            data: educationForm.certificateData,
+                                                            name: educationForm.certificateName,
+                                                            mimeType: educationForm.certificateMime || 'application/pdf'
+                                                        });
+                                                        setShowDocumentViewer(true);
+                                                    }}
+                                                    className="text-blue-600 hover:text-blue-700 text-xs font-medium"
+                                                >
+                                                    View
+                                                </button>
+                                            </div>
+                                        )}
+                                        <p className="text-xs text-gray-500">Upload file in PDF, JPEG, or PNG format only</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                    )}
+                        <div className="flex items-center justify-end gap-4 px-6 py-4 border-t border-gray-100">
+                            <button
+                                onClick={() => {
+                                    if (!savingEducation) {
+                                        setShowEducationModal(false);
+                                        setEditingEducationId(null);
+                                    }
+                                }}
+                                className="text-red-500 hover:text-red-600 font-semibold text-sm transition-colors"
+                                disabled={savingEducation}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSaveEducation}
+                                className="px-6 py-2 rounded-lg bg-[#4C6FFF] text-white font-semibold text-sm hover:bg-[#3A54D4] transition-colors disabled:opacity-50"
+                                disabled={savingEducation}
+                            >
+                                {savingEducation ? 'Saving...' : editingEducationId ? 'Update' : 'Save'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
-            </div>
-
+            )}
 
             {/* Add Experience Modal */}
             {showExperienceModal && (
@@ -6814,11 +7366,10 @@ export default function EmployeeProfilePage() {
                                         <input
                                             type="text"
                                             value={experienceForm.company}
-                                            onChange={(e) => {
-                                                handleExperienceChange('company', e.target.value);
-                                                if (experienceErrors.company) {
-                                                    setExperienceErrors(prev => ({ ...prev, company: '' }));
-                                                }
+                                            onChange={(e) => handleExperienceChange('company', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters, numbers, and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z0-9\s]/g, '');
                                             }}
                                             className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${experienceErrors.company ? 'ring-2 ring-red-400 border-red-400' : ''}`}
                                             disabled={savingExperience}
@@ -6836,11 +7387,10 @@ export default function EmployeeProfilePage() {
                                         <input
                                             type="text"
                                             value={experienceForm.designation}
-                                            onChange={(e) => {
-                                                handleExperienceChange('designation', e.target.value);
-                                                if (experienceErrors.designation) {
-                                                    setExperienceErrors(prev => ({ ...prev, designation: '' }));
-                                                }
+                                            onChange={(e) => handleExperienceChange('designation', e.target.value)}
+                                            onInput={(e) => {
+                                                // Restrict to letters, numbers, and spaces only
+                                                e.target.value = e.target.value.replace(/[^A-Za-z0-9\s]/g, '');
                                             }}
                                             className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${experienceErrors.designation ? 'ring-2 ring-red-400 border-red-400' : ''}`}
                                             disabled={savingExperience}
@@ -6858,12 +7408,7 @@ export default function EmployeeProfilePage() {
                                         <input
                                             type="date"
                                             value={experienceForm.startDate}
-                                            onChange={(e) => {
-                                                handleExperienceChange('startDate', e.target.value);
-                                                if (experienceErrors.startDate) {
-                                                    setExperienceErrors(prev => ({ ...prev, startDate: '' }));
-                                                }
-                                            }}
+                                            onChange={(e) => handleExperienceChange('startDate', e.target.value)}
                                             className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${experienceErrors.startDate ? 'ring-2 ring-red-400 border-red-400' : ''}`}
                                             disabled={savingExperience}
                                         />
@@ -6874,18 +7419,13 @@ export default function EmployeeProfilePage() {
                                 </div>
                                 <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
                                     <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                        End Date
+                                        End Date <span className="text-red-500">*</span>
                                     </label>
                                     <div className="w-full md:flex-1 flex flex-col gap-1">
                                         <input
                                             type="date"
                                             value={experienceForm.endDate}
-                                            onChange={(e) => {
-                                                handleExperienceChange('endDate', e.target.value);
-                                                if (experienceErrors.endDate) {
-                                                    setExperienceErrors(prev => ({ ...prev, endDate: '' }));
-                                                }
-                                            }}
+                                            onChange={(e) => handleExperienceChange('endDate', e.target.value)}
                                             className={`w-full h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-40 ${experienceErrors.endDate ? 'ring-2 ring-red-400 border-red-400' : ''}`}
                                             disabled={savingExperience}
                                         />
@@ -6896,7 +7436,7 @@ export default function EmployeeProfilePage() {
                                 </div>
                                 <div className="flex flex-row md:flex-row items-start gap-3 border border-gray-100 rounded-xl px-4 py-2.5 bg-white">
                                     <label className="text-[14px] font-medium text-[#555555] w-full md:w-1/3 pt-2">
-                                        Certificate
+                                        Certificate <span className="text-red-500">*</span>
                                     </label>
                                     <div className="w-full md:flex-1 flex flex-col gap-2">
                                         <div className="flex items-center gap-2">
@@ -6912,7 +7452,7 @@ export default function EmployeeProfilePage() {
                                                 type="button"
                                                 onClick={() => experienceCertificateFileRef.current?.click()}
                                                 disabled={savingExperience}
-                                                className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-blue-600 font-medium text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                className={`px-4 py-2 bg-white border rounded-lg text-blue-600 font-medium text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed ${experienceErrors.certificate ? 'border-red-400' : 'border-gray-300'}`}
                                             >
                                                 Choose File
                                             </button>
@@ -6920,10 +7460,13 @@ export default function EmployeeProfilePage() {
                                                 type="text"
                                                 readOnly
                                                 value={experienceForm.certificateName || 'No file chosen'}
-                                                className="flex-1 h-10 px-3 rounded-xl border border-[#E5E7EB] bg-[#F7F9FC] text-gray-600 text-sm"
+                                                className={`flex-1 h-10 px-3 rounded-xl border bg-[#F7F9FC] text-gray-600 text-sm ${experienceErrors.certificate ? 'ring-2 ring-red-400 border-red-400' : 'border-[#E5E7EB]'}`}
                                                 placeholder="No file chosen"
                                             />
                                         </div>
+                                        {experienceErrors.certificate && (
+                                            <p className="text-xs text-red-500">{experienceErrors.certificate}</p>
+                                        )}
                                         {experienceForm.certificateName && experienceForm.certificateData && (
                                             <div className="flex items-center justify-between gap-2 text-blue-600 text-sm font-medium bg-blue-50 px-4 py-2 rounded-lg border border-blue-200">
                                                 <div className="flex items-center gap-2">
@@ -6948,7 +7491,7 @@ export default function EmployeeProfilePage() {
                                                 </button>
                                             </div>
                                         )}
-                                        <p className="text-xs text-gray-500">Upload file in PDF, JPEG, PNG format</p>
+                                        <p className="text-xs text-gray-500">Upload file in PDF, JPEG, or PNG format only</p>
                                     </div>
                                 </div>
                             </div>

@@ -18,7 +18,15 @@ axiosInstance.interceptors.request.use(
         if (config.data instanceof FormData) {
             delete config.headers['Content-Type'];
         }
-        // You can add auth tokens here if needed
+        
+        // Add authorization token from localStorage if available
+        if (typeof window !== 'undefined') {
+            const token = localStorage.getItem('token');
+            if (token) {
+                config.headers.Authorization = `Bearer ${token}`;
+            }
+        }
+        
         return config;
     },
     (error) => {
@@ -36,6 +44,24 @@ axiosInstance.interceptors.response.use(
         if (error.response) {
             // Server responded with error status
             const errorData = error.response.data || {};
+            
+            // Handle 401 Unauthorized - token expired or invalid
+            if (error.response.status === 401) {
+                // Clear token and redirect to login
+                if (typeof window !== 'undefined') {
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('user');
+                    localStorage.removeItem('employeeUser');
+                    localStorage.removeItem('userPermissions');
+                    localStorage.removeItem('tokenExpiresIn');
+                    
+                    // Only redirect if not already on login page
+                    if (window.location.pathname !== '/login') {
+                        window.location.href = '/login';
+                    }
+                }
+            }
+            
             return Promise.reject({
                 message: errorData.message || `Server error: ${error.response.status}`,
                 ...errorData

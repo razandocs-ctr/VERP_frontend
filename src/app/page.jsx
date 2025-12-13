@@ -1,6 +1,24 @@
+'use client';
 
-import Employee from './Employee/page';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
 export default function Home() {
-  return <Employee />;
+  const router = useRouter();
+
+  useEffect(() => {
+    // Check if user is already logged in
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('token');
+      if (token) {
+        // User is logged in, redirect to dashboard
+        router.push('/dashboard');
+      } else {
+        // User is not logged in, redirect to login
+        router.push('/login');
+      }
+    }
+  }, [router]);
+
+  return null;
 }
